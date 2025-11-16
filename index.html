@@ -147,13 +147,15 @@
   let mime = '';
   let captureActive = false;
 
-  // Ring buffer of 1s blobs
+  // Ring buffer of ~1s blobs (actual chunk duration may vary slightly)
   const queue = []; // { blob, ts }
-  let bufferSeconds = 0; // approximate
+  let bufferSeconds = 0; // approximate seconds of buffered content
   let bufferWindow = parseInt(rngWindow.value,10);
   let targetDelay = parseInt(rngDelay.value,10);
   let playIndex = 0; // which blob index we are playing
   let playing = false;
+  let currentUrl = null; // track current object URL to revoke later
+  let nextTimer = null; // fallback timer in case 'ended' doesn't fire
 
   // Preferred mime types for iOS Safari first
   const preferred = [
@@ -243,10 +245,22 @@
     if (playing) return;
     playing = true;
 
-    playback.onended = () => {
+    // Attach once
+    playback.addEventListener('ended', () => {
       if (!playing) return;
       stepNext();
-    };
+    });
+    playback.addEventListener('stalled', () => {
+      // If stalled (Safari quirk), try to advance to next chunk
+      stepNext();
+    });
+    playback.addEventListener('error', () => {
+      // Try to advance on error as well
+      stepNext();
+    });
+
+    stepLoad(playIndex);
+  };
 
     // Start at current playIndex
     stepLoad(playIndex);
@@ -255,18 +269,47 @@
   function stepLoad(idx) {
     if (idx < 0 || idx >= queue.length) { return; }
     const { blob } = queue[idx];
+    // Revoke previous URL to avoid leaks
+    if (currentUrl) {
+      try { URL.revokeObjectURL(currentUrl); } catch {}
+      currentUrl = null;
+    }
     const url = URL.createObjectURL(blob);
+    currentUrl = url;
     playback.src = url;
+    // Ensure we start from beginning and try to play
+    try { playback.currentTime = 0; } catch {}
     playback.play().catch(()=>{});
+
+    // Fallback: sometimes 'ended' won't fire with short blobs on iOS
+    if (nextTimer) clearTimeout(nextTimer);
+    // Guess the chunk duration ~1.1s; if not ended by then, advance
+    nextTimer = setTimeout(() => {
+      if (!playback.paused && playing) {
+        stepNext();
+      }
+    }, 1100);
+
     updateBadges();
   }
 
   function stepNext() {
-    // Advance playback pointer by 1 second if we have it; else wait.
+    if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
+    // Advance playback pointer by one chunk if available; otherwise wait for new data
     if (playIndex + 1 < queue.length) {
       playIndex += 1;
       stepLoad(playIndex);
     } else {
+      // Wait for new data and then continue
+      const wait = setInterval(() => {
+        if (playIndex + 1 < queue.length) {
+          clearInterval(wait);
+          playIndex += 1;
+          stepLoad(playIndex);
+        }
+      }, 120);
+    }
+  } else {
       // Wait for new data to arrive, then continue.
       const wait = setInterval(() => {
         if (playIndex + 1 < queue.length) {
@@ -321,9 +364,11 @@
     queue.length = 0;
     bufferSeconds = 0;
     playIndex = 0;
+    if (currentUrl) { try { URL.revokeObjectURL(currentUrl); } catch {} currentUrl = null; }
     playback.removeAttribute('src');
     playback.load();
     playing = false;
+    if (nextTimer) { clearTimeout(nextTimer); nextTimer = null; }
     updateBadges();
     showToast('Buffer cleared');
   }
