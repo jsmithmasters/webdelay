@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Instant Replay (Volleyball) – MVP</title>
+  <style>
+    :root { --bg:#0b0f14; --panel:#121820; --accent:#7dd3fc; --muted:#94a3b8; --good:#34d399; --warn:#f59e0b; --bad:#ef4444; }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    .app { display: grid; grid-template-columns: 1fr 360px; gap: 14px; height: 100%; padding: 14px; }
+    @media (max-width: 1024px) { .app { grid-template-columns: 1fr; grid-template-rows: auto auto; } }
+    .video-wrap { position: relative; background:#000; border-radius: 14px; overflow: hidden; box-shadow: 0 6px 30px rgba(0,0,0,.35); }
+    video { width: 100%; height: 100%; background: #000; display: block; }
+
+    .panel { background: var(--panel); border-radius: 14px; padding: 14px; display: grid; gap: 12px; align-content:start; box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
+    .row { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
+    .row > * { flex: 1; }
+    h1 { font-size: 18px; margin: 0 0 4px; color:#fff; }
+    label { font-size: 12px; color: var(--muted); }
+
+    button { background:#1f2937; border:1px solid rgba(255,255,255,.08); color:#e5e7eb; padding:10px 12px; border-radius:10px; font-weight:600; cursor:pointer; transition: .15s; }
+    button:hover { background:#273449; }
+    button.primary { background: linear-gradient(180deg, #0ea5e9, #0284c7); border: none; }
+    button.good { background: linear-gradient(180deg, #34d399, #059669); border: none; }
+    button.warn { background: linear-gradient(180deg, #f59e0b, #d97706); border: none; }
+    button.bad { background: linear-gradient(180deg, #ef4444, #b91c1c); border: none; }
+
+    .control { background:#0f1520; border:1px solid rgba(255,255,255,.06); border-radius:10px; padding:10px; }
+    .control .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .value { font-variant-numeric: tabular-nums; font-weight:700; color:#fff; }
+    input[type=range] { width:100%; }
+
+    .badge { display:inline-block; padding:4px 8px; border-radius:999px; font-size:12px; border:1px solid rgba(255,255,255,.12); color:#cbd5e1; }
+    .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:8px; }
+    .grid-2 { display:grid; grid-template-columns: repeat(2, 1fr); gap:8px; }
+
+    .toast { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background:#0b1220; color:#e5e7eb; padding:10px 14px; border-radius:999px; border:1px solid rgba(255,255,255,.12); box-shadow:0 10px 30px rgba(0,0,0,.4); opacity:0; pointer-events:none; transition:opacity .2s; }
+    .toast.show { opacity: 1; }
+
+    .statusbar { display:flex; gap:8px; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="video-wrap">
+      <video id="playback" playsinline muted></video>
+    </div>
+
+    <div class="panel">
+      <div>
+        <h1>Instant Replay (Volleyball) – MVP</h1>
+        <div class="statusbar">
+          <span id="statusCam" class="badge">Camera: <b>stopped</b></span>
+          <span id="statusRec" class="badge">Recorder: <b>idle</b></span>
+          <span id="statusBuf" class="badge">Buffer: <b>0s</b></span>
+          <span id="statusPtr" class="badge">Pointer: <b>0</b></span>
+          <span id="statusMime" class="badge">MIME: <b>n/a</b></span>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="btnStart">▶ Start / Allow Camera</button>
+        <button id="btnPause">⏸ Pause</button>
+        <button id="btnSnap">↩︎ Snap Back</button>
+      </div>
+
+      <div class="grid">
+        <button id="btnRew5">⟲ 5s (R)</button>
+        <button id="btnRew10">⟲ 10s (Shift+R)</button>
+        <button id="btnPlayPause">Play/Pause (Space)</button>
+      </div>
+
+      <div class="grid">
+        <button class="good" id="btnSave10">Save 10s (S)</button>
+        <button class="good" id="btnSave15">Save 15s (Shift+S)</button>
+        <button class="good" id="btnSave20">Save 20s</button>
+      </div>
+
+      <div class="grid-2">
+        <div class="control">
+          <div class="top">
+            <label>Target Delay</label>
+            <span class="value" id="valDelay">12s</span>
+          </div>
+          <input type="range" min="3" max="30" step="1" value="12" id="rngDelay" />
+        </div>
+        <div class="control">
+          <div class="top">
+            <label>Buffer Window</label>
+            <span class="value" id="valWindow">120s</span>
+          </div>
+          <input type="range" min="20" max="180" step="10" value="120" id="rngWindow" />
+        </div>
+      </div>
+
+      <div class="grid">
+        <button id="btnSlow05">0.5×</button>
+        <button id="btnSlow025">0.25×</button>
+        <button id="btnNormal">1.0×</button>
+      </div>
+
+      <div class="row">
+        <button class="warn" id="btnFull">⤢ Fullscreen (for TV)</button>
+        <button class="bad" id="btnClear">🗑️ Clear Buffer</button>
+      </div>
+
+      <div class="control">
+        <label>Hotkeys: Space=Play/Pause • R=−5s • Shift+R=−10s • S=Save10s • Shift+S=Save15s • D=Snap Back • ←/→=Frame Step (paused)</label>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Toast</div>
+
+<script>
+(() => {
+  const playback = document.getElementById('playback');
+  const btnStart = document.getElementById('btnStart');
+  const btnPause = document.getElementById('btnPause');
+  const btnPlayPause = document.getElementById('btnPlayPause');
+  const btnRew5 = document.getElementById('btnRew5');
+  const btnRew10 = document.getElementById('btnRew10');
+  const btnSnap = document.getElementById('btnSnap');
+  const btnSave10 = document.getElementById('btnSave10');
+  const btnSave15 = document.getElementById('btnSave15');
+  const btnSave20 = document.getElementById('btnSave20');
+  const btnSlow05 = document.getElementById('btnSlow05');
+  const btnSlow025 = document.getElementById('btnSlow025');
+  const btnNormal = document.getElementById('btnNormal');
+  const btnFull = document.getElementById('btnFull');
+  const btnClear = document.getElementById('btnClear');
+  const rngDelay = document.getElementById('rngDelay');
+  const rngWindow = document.getElementById('rngWindow');
+  const valDelay = document.getElementById('valDelay');
+  const valWindow = document.getElementById('valWindow');
+  const statusCam = document.getElementById('statusCam');
+  const statusRec = document.getElementById('statusRec');
+  const statusBuf = document.getElementById('statusBuf');
+  const statusPtr = document.getElementById('statusPtr');
+  const statusMime = document.getElementById('statusMime');
+  const toast = document.getElementById('toast');
+
+  // ---- State ----
+  let stream = null;
+  let recorder = null;
+  let mime = '';
+  let captureActive = false;
+
+  // Ring buffer of 1s blobs
+  const queue = []; // { blob, ts }
+  let bufferSeconds = 0; // approximate
+  let bufferWindow = parseInt(rngWindow.value,10);
+  let targetDelay = parseInt(rngDelay.value,10);
+  let playIndex = 0; // which blob index we are playing
+  let playing = false;
+
+  // Preferred mime types for iOS Safari first
+  const preferred = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"', // iOS Safari typical
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+
+  function pickMime() {
+    for (const t of preferred) {
+      if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  }
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 1100);
+  }
+
+  function updateBadges() {
+    statusCam.innerHTML = `Camera: <b>${stream? 'on':'stopped'}</b>`;
+    statusRec.innerHTML = `Recorder: <b>${recorder? recorder.state : 'idle'}</b>`;
+    statusBuf.innerHTML = `Buffer: <b>${bufferSeconds}s</b>`;
+    statusPtr.innerHTML = `Pointer: <b>${playIndex}/${queue.length}</b>`;
+    statusMime.innerHTML = `MIME: <b>${mime || 'default'}</b>`;
+  }
+
+  function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+
+  async function start() {
+    if (captureActive) return;
+    try {
+      // Request camera
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: { ideal: 'environment' }
+        }
+      });
+      statusCam.innerHTML = 'Camera: <b>on</b>';
+
+      // Prepare recorder
+      mime = pickMime();
+      recorder = new MediaRecorder(stream, mime? { mimeType: mime } : {});
+
+      recorder.ondataavailable = (ev) => {
+        if (!ev.data || ev.data.size === 0) return;
+        const blob = ev.data;
+        queue.push({ blob, ts: Date.now() });
+        bufferSeconds += 1; // each chunk ~1s
+        // Trim to window
+        while (bufferSeconds > bufferWindow && queue.length > 0) {
+          queue.shift();
+          bufferSeconds -= 1;
+          playIndex = Math.max(0, playIndex - 1); // maintain relative position
+        }
+        // If not yet at target delay, do nothing. Set pointer once enough buffer exists.
+        if (!playing && queue.length >= targetDelay) {
+          playIndex = queue.length - targetDelay;
+          startPlaybackLoop();
+        }
+        updateBadges();
+      };
+
+      recorder.onstart = () => { statusRec.innerHTML = 'Recorder: <b>recording</b>'; };
+      recorder.onstop  = () => { statusRec.innerHTML = 'Recorder: <b>stopped</b>'; };
+
+      // Kick off capture – 1s timeslice
+      recorder.start(1000);
+      captureActive = true;
+      showToast('Capture started');
+      updateBadges();
+    } catch (err) {
+      console.error(err);
+      showToast('Camera permission failed');
+    }
+  }
+
+  // Simple chained playback of 1s blobs (Option A). Slight gap may occur at joins on iOS; acceptable for MVP.
+  function startPlaybackLoop() {
+    if (playing) return;
+    playing = true;
+
+    playback.onended = () => {
+      if (!playing) return;
+      stepNext();
+    };
+
+    // Start at current playIndex
+    stepLoad(playIndex);
+  }
+
+  function stepLoad(idx) {
+    if (idx < 0 || idx >= queue.length) { return; }
+    const { blob } = queue[idx];
+    const url = URL.createObjectURL(blob);
+    playback.src = url;
+    playback.play().catch(()=>{});
+    updateBadges();
+  }
+
+  function stepNext() {
+    // Advance playback pointer by 1 second if we have it; else wait.
+    if (playIndex + 1 < queue.length) {
+      playIndex += 1;
+      stepLoad(playIndex);
+    } else {
+      // Wait for new data to arrive, then continue.
+      const wait = setInterval(() => {
+        if (playIndex + 1 < queue.length) {
+          clearInterval(wait);
+          playIndex += 1;
+          stepLoad(playIndex);
+        }
+      }, 100);
+    }
+  }
+
+  function rewindSecs(s) {
+    if (!playing && playback.paused) {
+      // when paused, just adjust pointer
+    }
+    const steps = Math.floor(s);
+    playIndex = clamp(playIndex - steps, 0, queue.length - 1);
+    stepLoad(playIndex);
+    showToast(`Rewind −${s}s`);
+  }
+
+  function snapBack() {
+    if (queue.length < targetDelay) return;
+    playIndex = queue.length - targetDelay;
+    stepLoad(playIndex);
+    showToast('Snapped back');
+  }
+
+  function togglePlayPause() {
+    if (playback.paused) {
+      playback.play().catch(()=>{});
+      showToast('Play');
+    } else {
+      playback.pause();
+      showToast('Pause');
+    }
+  }
+
+  function setRate(r) {
+    playback.playbackRate = r;
+    showToast(`${r}× speed`);
+  }
+
+  function frameStep(dir) { // dir: -1 or +1
+    // Crude frame-step: pause and nudge currentTime slightly; with 1s clips this is limited but workable for MVP
+    playback.pause();
+    const dt = 1/30 * (dir);
+    try { playback.currentTime = Math.max(0, Math.min((playback.duration||1), playback.currentTime + dt)); } catch {}
+  }
+
+  function clearBuffer() {
+    queue.length = 0;
+    bufferSeconds = 0;
+    playIndex = 0;
+    playback.removeAttribute('src');
+    playback.load();
+    playing = false;
+    updateBadges();
+    showToast('Buffer cleared');
+  }
+
+  function saveLast(seconds) {
+    const count = Math.min(queue.length, Math.floor(seconds));
+    if (count <= 0) { showToast('Nothing to save'); return; }
+    const parts = [];
+    for (let i = queue.length - count; i < queue.length; i++) parts.push(queue[i].blob);
+    const out = new Blob(parts, { type: mime || 'video/mp4' });
+
+    const t = new Date();
+    const pad = (n)=> String(n).padStart(2,'0');
+    const fname = `volley_clip_${t.getFullYear()}-${pad(t.getMonth()+1)}-${pad(t.getDate())}_${pad(t.getHours())}-${pad(t.getMinutes())}-${pad(t.getSeconds())}_${seconds}s.mp4`;
+
+    const a = document.createElement('a');
+    const url = URL.createObjectURL(out);
+    a.href = url; a.download = fname; a.click();
+    setTimeout(()=> URL.revokeObjectURL(url), 3000);
+    showToast(`Saved ${seconds}s clip`);
+  }
+
+  // ---- UI bindings ----
+  btnStart.addEventListener('click', start);
+  btnPause.addEventListener('click', () => { playback.pause(); showToast('Pause'); });
+  btnPlayPause.addEventListener('click', togglePlayPause);
+  btnRew5.addEventListener('click', () => rewindSecs(5));
+  btnRew10.addEventListener('click', () => rewindSecs(10));
+  btnSnap.addEventListener('click', snapBack);
+  btnSave10.addEventListener('click', () => saveLast(10));
+  btnSave15.addEventListener('click', () => saveLast(15));
+  btnSave20.addEventListener('click', () => saveLast(20));
+  btnSlow05.addEventListener('click', () => setRate(0.5));
+  btnSlow025.addEventListener('click', () => setRate(0.25));
+  btnNormal.addEventListener('click', () => setRate(1.0));
+  btnFull.addEventListener('click', () => {
+    if (document.fullscreenElement) { document.exitFullscreen(); }
+    else { document.documentElement.requestFullscreen().catch(()=>{}); }
+  });
+  btnClear.addEventListener('click', clearBuffer);
+
+  rngDelay.addEventListener('input', () => {
+    targetDelay = parseInt(rngDelay.value,10);
+    valDelay.textContent = `${targetDelay}s`;
+  });
+  rngWindow.addEventListener('input', () => {
+    bufferWindow = parseInt(rngWindow.value,10);
+    valWindow.textContent = `${bufferWindow}s`;
+  });
+
+  // Keyboard shortcuts (for Bluetooth presenter / mini keyboard)
+  window.addEventListener('keydown', (e) => {
+    const key = e.key;
+    if (key === ' ') { e.preventDefault(); togglePlayPause(); }
+    else if (key.toLowerCase() === 'r' && e.shiftKey) { e.preventDefault(); rewindSecs(10); }
+    else if (key.toLowerCase() === 'r') { e.preventDefault(); rewindSecs(5); }
+    else if (key.toLowerCase() === 's' && e.shiftKey) { e.preventDefault(); saveLast(15); }
+    else if (key.toLowerCase() === 's') { e.preventDefault(); saveLast(10); }
+    else if (key.toLowerCase() === 'd') { e.preventDefault(); snapBack(); }
+    else if (key === 'ArrowLeft') { e.preventDefault(); frameStep(-1); }
+    else if (key === 'ArrowRight') { e.preventDefault(); frameStep(+1); }
+  });
+
+})();
+</script>
+</body>
+</html>
