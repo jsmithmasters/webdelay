@@ -204,8 +204,28 @@
       statusCam.innerHTML = 'Camera: <b>on</b>';
 
       // Prepare recorder
-      mime = pickMime();
-      recorder = new MediaRecorder(stream, mime? { mimeType: mime } : {});
+     mime = pickMime();
+try {
+  // Try with detected mime
+  recorder = new MediaRecorder(stream, (mime && MediaRecorder.isTypeSupported(mime)) ? { mimeType: mime } : undefined);
+} catch (e) {
+  console.warn('MediaRecorder init with mime failed, falling back:', e);
+  try {
+    // Bare constructor
+    recorder = new MediaRecorder(stream);
+  } catch (e2) {
+    console.error('MediaRecorder not supported:', e2);
+    alert('MediaRecorder not supported on this browser/device.');
+    return;
+  }
+}
+
+// Helpful error visibility
+recorder.addEventListener('error', (ev) => {
+  console.error('MediaRecorder error:', ev);
+  showToast('Recorder error');
+});
+
 
       recorder.ondataavailable = (ev) => {
         if (!ev.data || ev.data.size === 0) return;
