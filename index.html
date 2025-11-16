@@ -195,7 +195,11 @@
     if (captureActive) return;
     try {
       // 1) Request camera over https
+      console.log('Requesting camera...');
+
       stream = await navigator.mediaDevices.getUserMedia({
+        console.log('Camera stream granted', stream);
+
         audio: false,
         video: {
           width: { ideal: 1280 },
