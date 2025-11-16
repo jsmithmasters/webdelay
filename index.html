@@ -144,6 +144,8 @@
   // ---- State ----
   let stream = null;
   let recorder = null;
+  let sourceVid = null; // hidden live preview for canvas fallback
+  let chunksCount = 0;  // diagnostics: how many blobs received
   let mime = '';
   let captureActive = false;
 
@@ -192,7 +194,7 @@
   async function start() {
     if (captureActive) return;
     try {
-      // Request camera
+      // 1) Request camera over https
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
@@ -203,54 +205,25 @@
       });
       statusCam.innerHTML = 'Camera: <b>on</b>';
 
-      // Prepare recorder
-     mime = pickMime();
-try {
-  // Try with detected mime
-  recorder = new MediaRecorder(stream, (mime && MediaRecorder.isTypeSupported(mime)) ? { mimeType: mime } : undefined);
-} catch (e) {
-  console.warn('MediaRecorder init with mime failed, falling back:', e);
-  try {
-    // Bare constructor
-    recorder = new MediaRecorder(stream);
-  } catch (e2) {
-    console.error('MediaRecorder not supported:', e2);
-    alert('MediaRecorder not supported on this browser/device.');
-    return;
-  }
-}
+      // Create a hidden source video to ensure frames are flowing
+      sourceVid = document.createElement('video');
+      sourceVid.playsInline = true; sourceVid.muted = true; sourceVid.autoplay = true;
+      sourceVid.srcObject = stream;
+      await sourceVid.play().catch(()=>{});
 
-// Helpful error visibility
-recorder.addEventListener('error', (ev) => {
-  console.error('MediaRecorder error:', ev);
-  showToast('Recorder error');
-});
+      // Try native stream recording first
+      const ok = await startRecorderWithStream(stream);
 
-
-      recorder.ondataavailable = (ev) => {
-        if (!ev.data || ev.data.size === 0) return;
-        const blob = ev.data;
-        queue.push({ blob, ts: Date.now() });
-        bufferSeconds += 1; // each chunk ~1s
-        // Trim to window
-        while (bufferSeconds > bufferWindow && queue.length > 0) {
-          queue.shift();
-          bufferSeconds -= 1;
-          playIndex = Math.max(0, playIndex - 1); // maintain relative position
+      // Wait briefly to see if data comes in; if not, fallback to canvas pipeline
+      setTimeout(async () => {
+        if (chunksCount === 0) {
+          console.warn('No chunks from direct MediaRecorder; falling back to canvas pipeline');
+          showToast('Fallback: canvas capture');
+          try { recorder && recorder.state !== 'inactive' && recorder.stop(); } catch {}
+          await startCanvasPipeline();
         }
-        // If not yet at target delay, do nothing. Set pointer once enough buffer exists.
-        if (!playing && queue.length >= targetDelay) {
-          playIndex = queue.length - targetDelay;
-          startPlaybackLoop();
-        }
-        updateBadges();
-      };
+      }, 1800);
 
-      recorder.onstart = () => { statusRec.innerHTML = 'Recorder: <b>recording</b>'; };
-      recorder.onstop  = () => { statusRec.innerHTML = 'Recorder: <b>stopped</b>'; };
-
-      // Kick off capture – 1s timeslice
-      recorder.start(1000);
       captureActive = true;
       showToast('Capture started');
       updateBadges();
@@ -261,6 +234,66 @@ recorder.addEventListener('error', (ev) => {
   }
 
   // Simple chained playback of 1s blobs (Option A). Slight gap may occur at joins on iOS; acceptable for MVP.
+  async function startRecorderWithStream(srcStream) {
+    mime = pickMime();
+    chunksCount = 0;
+    try {
+      const opts = (mime && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(mime)) ? { mimeType: mime } : undefined;
+      recorder = new MediaRecorder(srcStream, opts);
+    } catch (e) {
+      try { recorder = new MediaRecorder(srcStream); }
+      catch (e2) { console.error('MediaRecorder unsupported:', e2); showToast('MediaRecorder unsupported'); return false; }
+    }
+
+    recorder.ondataavailable = (ev) => {
+      if (!ev.data || ev.data.size === 0) return;
+      chunksCount++;
+      const blob = ev.data;
+      queue.push({ blob, ts: Date.now() });
+      bufferSeconds += 1; // ~1s per chunk
+      // Trim to window
+      while (bufferSeconds > bufferWindow && queue.length > 0) {
+        queue.shift(); bufferSeconds -= 1; playIndex = Math.max(0, playIndex - 1);
+      }
+      if (!playing && queue.length >= targetDelay) { playIndex = queue.length - targetDelay; startPlaybackLoop(); }
+      updateBadges();
+    };
+
+    recorder.onerror = (e) => { console.error('MediaRecorder error', e); showToast('Recorder error'); };
+    recorder.onstart = () => { statusRec.innerHTML = 'Recorder: <b>recording</b>'; };
+    recorder.onstop  = () => { statusRec.innerHTML = 'Recorder: <b>stopped</b>'; };
+
+    try {
+      recorder.start(1000); // 1s timeslice
+      return true;
+    } catch (e) {
+      console.error('recorder.start failed', e);
+      return false;
+    }
+  }
+
+  async function startCanvasPipeline() {
+    if (!sourceVid) return false;
+    // Offscreen canvas drawing sourceVid -> captured as a new stream
+    const w = 1280, h = 720;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+
+    let rafId = 0;
+    const draw = () => { try { ctx.drawImage(sourceVid, 0, 0, w, h); } catch {}; rafId = requestAnimationFrame(draw); };
+    draw();
+
+    const canvasStream = canvas.captureStream(30);
+    const ok = await startRecorderWithStream(canvasStream);
+    if (!ok) {
+      cancelAnimationFrame(rafId);
+      showToast('Canvas pipeline failed');
+      return false;
+    }
+    return true;
+  }
+
   function startPlaybackLoop() {
     if (playing) return;
     playing = true;
