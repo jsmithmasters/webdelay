@@ -1,4 +1,5 @@
-// Minimal Safari-safe video delay using a canvas ring buffer.
+// Safari-stable video delay with a fixed-size ring buffer and canvas reuse.
+// Simple build: rear camera only, performance-first defaults.
 (() => {
   const live = document.getElementById('live');
   const screen = document.getElementById('screen');
@@ -12,6 +13,7 @@
   const delayLabel = document.getElementById('delayLabel');
   const fpsRange = document.getElementById('fpsRange');
   const fpsLabel = document.getElementById('fpsLabel');
+  const perfMode = document.getElementById('perfMode');
 
   const bufSec = document.getElementById('bufSec');
   const lagSec = document.getElementById('lagSec');
@@ -22,46 +24,98 @@
   let running = false;
   let playing = true;
 
-  let frames = [];
-  let targetDelayMs = 12000;
-  let targetFps = 30;
+  let targetDelayMs = 12000; // default 12s
+  let targetFps = 20;        // default 20 FPS for iOS stability
   let captureRAF = null;
   let drawRAF = null;
 
-  const secure = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
-  const canBitmap = ('createImageBitmap' in window);
-  const hasRVFC = ('requestVideoFrameCallback' in HTMLVideoElement.prototype);
+  // Ring buffer state
+  let rb = null; // { canvases: [], times: Float64Array, size, head, w, h }
+  const HEADROOM_MS = 2000;
 
-  function setStatus(msg){ statusEl.textContent = msg; }
+  const secure = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+
+  function setStatus(msg){ if (statusEl) statusEl.textContent = msg; }
   function setUI(state){
-    btnStart.disabled = (state !== 'idle');
-    btnStop.disabled = (state === 'idle');
-    btnPlayPause.disabled = (state === 'idle');
-    btnPlayPause.textContent = playing ? 'Pause' : 'Play';
-    delayLabel.textContent = (targetDelayMs/1000).toFixed(1) + 's';
-    fpsLabel.textContent = String(targetFps);
+    if (btnStart) btnStart.disabled = (state !== 'idle');
+    if (btnStop) btnStop.disabled = (state === 'idle');
+    if (btnPlayPause) {
+      btnPlayPause.disabled = (state === 'idle');
+      btnPlayPause.textContent = playing ? 'Pause' : 'Play';
+    }
+    if (delayLabel) delayLabel.textContent = (targetDelayMs/1000).toFixed(1) + 's';
+    if (fpsLabel) fpsLabel.textContent = String(targetFps);
   }
 
-  function resizeCanvas(){
-    const w = live.videoWidth || screen.clientWidth || 1280;
-    const h = live.videoHeight || screen.clientHeight || 720;
-    if (screen.width !== w || screen.height !== h) { screen.width = w; screen.height = h; }
+  function pickDims() {
+    // 480p for stability by default; uncheck perfMode to try 720p
+    if (perfMode && perfMode.checked) return { w: 854, h: 480 };
+    return { w: 1280, h: 720 };
+  }
+
+  function resizeCanvasTo(d){ screen.width = d.w; screen.height = d.h; }
+
+  function makeRingBuffer(seconds, fps, dims){
+    const frames = Math.max(2, Math.ceil((seconds + HEADROOM_MS/1000) * fps));
+    const canvases = new Array(frames);
+    for (let i=0;i<frames;i++){
+      const c = document.createElement('canvas');
+      c.width = dims.w; c.height = dims.h;
+      canvases[i] = c;
+    }
+    return { canvases, times: new Float64Array(frames), size: frames, head: 0, w: dims.w, h: dims.h };
+  }
+
+  function rbPush(ts){
+    const c = rb.canvases[rb.head];
+    const cctx = c.getContext('2d');
+    cctx.drawImage(live, 0, 0, rb.w, rb.h);
+    rb.times[rb.head] = ts;
+    rb.head = (rb.head + 1) % rb.size;
+  }
+
+  function rbDuration(){
+    const newest = (rb.head - 1 + rb.size) % rb.size;
+    const oldest = rb.head;
+    const tNew = rb.times[newest];
+    const tOld = rb.times[oldest];
+    if (!tNew || !tOld || tNew <= 0 || tOld <= 0) return 0;
+    const d = tNew - tOld;
+    return d > 0 ? d/1000 : 0;
+  }
+
+  function rbFind(ts){
+    // linearize circular buffer to oldest..newest, then binary search by timestamp
+    const order = [];
+    for (let i=0;i<rb.size;i++){ order.push((rb.head + i) % rb.size); }
+    const filled = order.filter(idx => rb.times[idx] > 0);
+    if (filled.length === 0) return null;
+
+    let lo = 0, hi = filled.length - 1, ans = filled[filled.length - 1];
+    while (lo <= hi){
+      const mid = (lo + hi) >> 1;
+      const idx = filled[mid];
+      if (rb.times[idx] >= ts){ ans = idx; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    return ans;
   }
 
   async function start(){
     if (running) return;
-    if (!secure){
-      setStatus('Needs HTTPS for camera'); alert('Camera requires HTTPS on iOS (GitHub Pages recommended).');
-      return;
-    }
+    if (!secure){ setStatus('Needs HTTPS for camera'); alert('Use HTTPS (GitHub Pages) for camera on iOS.'); return; }
+
+    const dims = pickDims();
+    const constraints = {
+      video: { facingMode: 'environment', width: { ideal: dims.w }, height: { ideal: dims.h }, frameRate: { ideal: 30, max: 60 } },
+      audio: false
+    };
+
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 60 } },
-        audio: false
-      });
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (e) {
       setStatus('camera blocked');
-      alert('Cannot access camera. On iPad/iPhone: Settings > Safari > Camera > Allow.\\n\\n' + e.message);
+      alert('Allow camera in iOS Settings > Safari > Camera.\n\n' + e.message);
       return;
     }
 
@@ -69,16 +123,18 @@
     live.setAttribute('playsinline','true');
     try { await live.play(); } catch {}
 
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    resizeCanvasTo(dims);
+    window.addEventListener('resize', () => resizeCanvasTo(dims));
+
+    rb = makeRingBuffer(targetDelayMs/1000 + HEADROOM_MS/1000, targetFps, dims);
+    for (let i=0;i<rb.size;i++){ rb.times[i] = 0; }
 
     running = true;
     playing = true;
-    frames = [];
     startCapture();
     startDraw();
     setUI('run');
-    setStatus(`running  mode=${canBitmap?'bitmap':'canvas'} rvfc=${hasRVFC?'yes':'no'}`);
+    setStatus(`running ${dims.w}x${dims.h} rb=${rb.size} perf=${perfMode && perfMode.checked?'on':'off'}`);
   }
 
   function stop(){
@@ -88,8 +144,10 @@
     if (drawRAF) cancelAnimationFrame(drawRAF);
     captureRAF = drawRAF = null;
     if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
-    frames = [];
-    ctx.clearRect(0,0,screen.width,screen.height);
+    rb = null;
+    // force a clear without resizing CSS box
+    const w = screen.width, h = screen.height;
+    screen.width = w; screen.height = h;
     setUI('idle');
     setStatus('idle');
   }
@@ -98,103 +156,70 @@
     const capInterval = 1000 / targetFps;
     let last = performance.now();
 
-    const capture = async (now) => {
+    const loop = (now) => {
       if (!running) return;
+      captureRAF = requestAnimationFrame(loop);
 
       if (now - last >= capInterval - 2){
         last = now;
-        try {
-          if (canBitmap){
-            const bmp = await createImageBitmap(live);
-            frames.push({ t: now, b: bmp });
-          } else {
-            const c = document.createElement('canvas');
-            const w = live.videoWidth || 1280, h = live.videoHeight || 720;
-            c.width = w; c.height = h;
-            c.getContext('2d').drawImage(live, 0, 0, w, h);
-            frames.push({ t: now, c });
-          }
-          const maxMs = targetDelayMs + 2000;
-          while (frames.length > 2 && now - frames[0].t > maxMs){
-            const f = frames.shift(); if (f.b && f.b.close) f.b.close();
-          }
-        } catch {}
+        try { rbPush(now); } catch {}
       }
-
-      bufSec.textContent = frames.length < 2 ? '0.0' : ((frames[frames.length-1].t - frames[0].t)/1000).toFixed(1);
-
-      if (hasRVFC) live.requestVideoFrameCallback(capture);
-      else captureRAF = requestAnimationFrame(capture);
+      if (bufSec) bufSec.textContent = rb ? rbDuration().toFixed(1) : '0.0';
     };
 
-    if (hasRVFC) live.requestVideoFrameCallback(capture);
-    else captureRAF = requestAnimationFrame(capture);
-  }
-
-  function findIndexForTs(ts){
-    let lo=0, hi=frames.length-1, ans=-1;
-    while (lo<=hi){
-      const mid=(lo+hi)>>1;
-      if (frames[mid].t >= ts){ ans = mid; hi = mid - 1; }
-      else lo = mid + 1;
-    }
-    return ans === -1 ? frames.length - 1 : ans;
+    captureRAF = requestAnimationFrame(loop);
   }
 
   function startDraw(){
     let lastDraw = performance.now();
-    let count = 0, tick = performance.now();
+    let framesDrawn = 0, tick = performance.now();
 
-    const draw = (now) => {
+    const loop = (now) => {
       if (!running) return;
-      drawRAF = requestAnimationFrame(draw);
+      drawRAF = requestAnimationFrame(loop);
 
-      if (now - lastDraw < 1000/60 - 2) return;
+      if (now - lastDraw < 1000/60 - 2) return; // cap ~60Hz draw
       lastDraw = now;
 
-      if (!playing || frames.length < 2) return;
+      if (!playing || !rb) return;
+
       const wantTs = now - targetDelayMs;
-      const idx = findIndexForTs(wantTs);
-      const f = frames[idx];
-      if (!f) return;
+      const idx = rbFind(wantTs);
+      if (idx == null) return;
 
-      if (screen.width !== live.videoWidth || screen.height !== live.videoHeight){
-        if (live.videoWidth && live.videoHeight){
-          screen.width = live.videoWidth; screen.height = live.videoHeight;
-        }
-      }
-      if (f.b) ctx.drawImage(f.b, 0, 0, screen.width, screen.height);
-      else if (f.c) ctx.drawImage(f.c, 0, 0, screen.width, screen.height);
+      try { ctx.drawImage(rb.canvases[idx], 0, 0, screen.width, screen.height); } catch {}
 
-      lagSec.textContent = ((frames[frames.length-1].t - wantTs)/1000).toFixed(1);
+      const newest = (rb.head - 1 + rb.size) % rb.size;
+      const latestTs = rb.times[newest] || now;
+      if (lagSec) lagSec.textContent = ((latestTs - wantTs)/1000).toFixed(1);
 
-      count++;
+      framesDrawn++;
       const dt = now - tick;
-      if (dt >= 1000){ drawFps.textContent = String(count); count = 0; tick = now; }
+      if (dt >= 1000){ if (drawFps) drawFps.textContent = String(framesDrawn); framesDrawn = 0; tick = now; }
     };
 
-    drawRAF = requestAnimationFrame(draw);
+    drawRAF = requestAnimationFrame(loop);
   }
 
-  // UI
-  btnStart.addEventListener('click', start, { passive: true });
-  btnStop.addEventListener('click', stop, { passive: true });
-  btnPlayPause.addEventListener('click', () => {
+  // Controls
+  if (btnStart) btnStart.addEventListener('click', start, { passive: true });
+  if (btnStop) btnStop.addEventListener('click', stop, { passive: true });
+  if (btnPlayPause) btnPlayPause.addEventListener('click', () => {
     if (!running) return;
     playing = !playing;
     btnPlayPause.textContent = playing ? 'Pause' : 'Play';
   });
 
-  delayRange.addEventListener('input', (e) => {
+  if (delayRange) delayRange.addEventListener('input', e => {
     const v = Number(e.target.value) || 12;
     targetDelayMs = Math.max(1000, Math.min(30000, Math.round(v*1000)));
-    delayLabel.textContent = v.toFixed(1) + 's';
+    if (delayLabel) delayLabel.textContent = v.toFixed(1) + 's';
   });
 
-  fpsRange.addEventListener('input', (e) => {
-    const v = parseInt(e.target.value, 10) || 30;
+  if (fpsRange) fpsRange.addEventListener('input', e => {
+    const v = parseInt(e.target.value, 10) || 20;
     targetFps = Math.max(5, Math.min(60, v));
-    fpsLabel.textContent = String(targetFps);
+    if (fpsLabel) fpsLabel.textContent = String(targetFps);
   });
 
   // Init
