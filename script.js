@@ -29,6 +29,118 @@
   let captureRAF = null;
   let drawRAF = null;
 
+  // ---- Rolling clip buffer using MediaRecorder on the live stream ----
+  let mr = null;
+  let mrChunks = []; // {blob, t} with capture time (ms)
+  const MR_TIMESLICE = 1000; // 1s chunks for fine trimming
+  const CLIP_WINDOW_MS = 15000;
+
+  function startRecorder(stream) {
+    try {
+      stopRecorder();
+      mr = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          mrChunks.push({ blob: e.data, t: performance.now() });
+          // trim to last 15s
+          const cutoff = performance.now() - CLIP_WINDOW_MS - 1000;
+          while (mrChunks.length && mrChunks[0].t < cutoff) mrChunks.shift();
+        }
+      };
+      mr.start(MR_TIMESLICE);
+    } catch (err) {
+      console.warn('MediaRecorder unavailable; replay/save disabled', err);
+      mr = null;
+    }
+  }
+  function stopRecorder() {
+    if (mr) {
+      try { mr.stop(); } catch {}
+      mr = null;
+    }
+    mrChunks = [];
+  }
+
+  function buildLastClipBlob() {
+    if (!mrChunks.length) return null;
+    const now = performance.now();
+    const cutoff = now - CLIP_WINDOW_MS;
+    const parts = [];
+    for (let i = mrChunks.length - 1; i >= 0; i--) {
+      if (mrChunks[i].t >= cutoff) parts.unshift(mrChunks[i].blob);
+      else break;
+    }
+    if (!parts.length) return null;
+    return new Blob(parts, { type: 'video/webm' });
+  }
+
+  // Replay handling
+  const replayOverlay = document.getElementById('replayOverlay');
+  const replayVideo = document.getElementById('replayVideo');
+  let replayURL = null;
+
+  function hideReplay() {
+    if (replayVideo) {
+      replayVideo.pause();
+      replayVideo.removeAttribute('src');
+      replayVideo.load();
+    }
+    if (replayURL) {
+      URL.revokeObjectURL(replayURL);
+      replayURL = null;
+    }
+    if (replayOverlay) replayOverlay.style.display = 'none';
+  }
+
+  function replayLast15s() {
+    const blob = buildLastClipBlob();
+    if (!blob) {
+      setStatus('No clip yet');
+      return;
+    }
+    hideReplay();
+    replayURL = URL.createObjectURL(blob);
+    replayVideo.src = replayURL;
+    replayOverlay.style.display = 'flex';
+    replayVideo.currentTime = 0;
+    replayVideo.play().catch(()=>{});
+    replayVideo.onended = () => {
+      // keep overlay open; user can close by tapping background
+    };
+  }
+
+  if (replayOverlay) {
+    replayOverlay.addEventListener('click', (e) => {
+      if (e.target === replayOverlay) hideReplay();
+    });
+  }
+
+  // Save handling
+  function saveLast15s() {
+    const blob = buildLastClipBlob();
+    if (!blob) {
+      setStatus('No clip to save');
+      return;
+    }
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const fname = `delay-clip-${ts}.webm`;
+    a.download = fname;
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    }, 0);
+  }
+
+  const btnReplay = document.getElementById('btnReplay');
+  const btnSaveClip = document.getElementById('btnSaveClip');
+  if (btnReplay) btnReplay.addEventListener('click', replayLast15s);
+  if (btnSaveClip) btnSaveClip.addEventListener('click', saveLast15s);
+
+
   // Ring buffer state
   let rb = null; // { canvases: [], times: Float64Array, size, head, w, h }
   const HEADROOM_MS = 2000;
