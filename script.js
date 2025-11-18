@@ -1,283 +1,228 @@
-const liveVideo = document.getElementById('liveVideo');
-const delayVideo = document.getElementById('delayVideo');
-const replayVideo = document.getElementById('replayVideo');
+// Safari-stable video delay with a fixed-size ring buffer and canvas reuse.
+// Simple build: rear camera only, performance-first defaults.
+(() => {
+  const live = document.getElementById('live');
+  const screen = document.getElementById('screen');
+  const ctx = screen.getContext('2d', { alpha: false });
 
-const startBtn = document.getElementById('startBtn');
-const delayModeBtn = document.getElementById('delayModeBtn');
-const replayBtn = document.getElementById('replayBtn');
-const replayAgainBtn = document.getElementById('replayAgainBtn');
-const saveClipBtn = document.getElementById('saveClipBtn');
-const slowMoBtn = document.getElementById('slowMoBtn');
-const loopBtn = document.getElementById('loopBtn');
-const zoomInBtn = document.getElementById('zoomInBtn');
-const zoomOutBtn = document.getElementById('zoomOutBtn');
-const mirrorBtn = document.getElementById('mirrorBtn');
-const keepAwakeBtn = document.getElementById('keepAwakeBtn');
-const resetBtn = document.getElementById('resetBtn');
+  const btnStart = document.getElementById('btnStart');
+  const btnStop = document.getElementById('btnStop');
+  const btnPlayPause = document.getElementById('btnPlayPause');
 
-const bufferStatus = document.getElementById('bufferStatus');
-const delayStatus = document.getElementById('delayStatus');
-const zoomStatus = document.getElementById('zoomStatus');
-const modePill = document.getElementById('modePill');
+  const delayRange = document.getElementById('delayRange');
+  const delayLabel = document.getElementById('delayLabel');
+  const fpsRange = document.getElementById('fpsRange');
+  const fpsLabel = document.getElementById('fpsLabel');
+  const perfMode = document.getElementById('perfMode');
 
-const pauseDuringReplay = document.getElementById('pauseDuringReplay');
-const defaultSlowMo = document.getElementById('defaultSlowMo');
-const crossfadeDelay = document.getElementById('crossfadeDelay');
+  const bufSec = document.getElementById('bufSec');
+  const lagSec = document.getElementById('lagSec');
+  const drawFps = document.getElementById('drawFps');
+  const statusEl = document.getElementById('status');
 
-const chips = document.querySelectorAll('.chip[data-delay]');
-const customDelayInput = document.getElementById('customDelay');
-const downloadLink = document.getElementById('downloadLink');
+  let stream = null;
+  let running = false;
+  let playing = true;
 
-let stream=null, track=null;
-let mediaRecorder=null, recorderMime=null;
-let isRecording=false, isReplaying=false, loopReplay=false;
-let chunks=[]; // {blob, ts}
-let bufferSeconds=180;
-let lastReplayMs=15000;
-let updatingDelay=false;
-let delayTimer=null;
-let lastReplayBlobURL=null;
-let zoomLevel=1.0, usePTZZoom=false;
-let wakeLock=null;
+  let targetDelayMs = 12000; // default 12s
+  let targetFps = 20;        // default 20 FPS for iOS stability
+  let captureRAF = null;
+  let drawRAF = null;
 
-function isiOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream; }
+  // Ring buffer state
+  let rb = null; // { canvases: [], times: Float64Array, size, head, w, h }
+  const HEADROOM_MS = 2000;
 
-function updateUI(){
-  bufferStatus.innerHTML = `Buffer: <strong>${isRecording?'On':'Off'}</strong>`;
-  delayStatus.innerHTML = `Delay: <strong>${Math.round(lastReplayMs/1000)}s</strong>`;
-  modePill.textContent = isReplaying ? 'REPLAY' : 'LIVE';
-  modePill.classList.toggle('replay', isReplaying);
-  modePill.classList.toggle('live', !isReplaying);
-  const started = !!stream;
-  [delayModeBtn,replayBtn,replayAgainBtn,saveClipBtn,slowMoBtn,loopBtn].forEach(b=> b.disabled = !started);
-  zoomStatus.innerHTML = `Zoom: <strong>${zoomLevel.toFixed(1)}×${usePTZZoom?' (optical)':''}</strong>`;
-}
+  const secure = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
 
-function setDelayFromChip(elem){
-  chips.forEach(c=>c.classList.remove('active'));
-  elem.classList.add('active');
-  document.querySelector('.chip.custom').classList.remove('active');
-  lastReplayMs = Number(elem.dataset.delay)*1000;
-  updateUI();
-}
-
-chips.forEach(chip => chip.addEventListener('click', ()=> setDelayFromChip(chip)));
-customDelayInput.addEventListener('change', ()=>{
-  chips.forEach(c=>c.classList.remove('active'));
-  document.querySelector('.chip.custom').classList.add('active');
-  const v = Math.max(3, Math.min(120, Math.round(Number(customDelayInput.value)||15)));
-  customDelayInput.value = v;
-  lastReplayMs = v*1000;
-  updateUI();
-});
-
-async function start(){
-  startBtn.disabled = true;
-  try{
-    try{
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: 'environment' }, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} },
-        audio: false
-      });
-    }catch(e){
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} },
-        audio: false
-      });
+  function setStatus(msg){ if (statusEl) statusEl.textContent = msg; }
+  function setUI(state){
+    if (btnStart) btnStart.disabled = (state !== 'idle');
+    if (btnStop) btnStop.disabled = (state === 'idle');
+    if (btnPlayPause) {
+      btnPlayPause.disabled = (state === 'idle');
+      btnPlayPause.textContent = playing ? 'Pause' : 'Play';
     }
-    liveVideo.srcObject = stream;
-    track = stream.getVideoTracks()[0];
-    try{ const caps = track.getCapabilities?.(); if(caps && 'zoom' in caps){ usePTZZoom = true; } }catch(e){}
-    startRecording();
-    await startDelayView();
-    await enableKeepAwake();
-  }catch(err){
-    alert('Could not start camera. Please allow camera access.');
-    console.error(err);
-  }finally{ startBtn.disabled=false; updateUI(); }
-}
-
-function pickMime(){
-  const types = ['video/mp4;codecs="avc1.42E01E"','video/webm;codecs="vp9"','video/webm;codecs="vp8"','video/webm'];
-  for(const t of types){ if(MediaRecorder.isTypeSupported?.(t)) return t; }
-  return '';
-}
-
-function startRecording(){
-  if(!stream) return;
-  const mime=pickMime();
-  recorderMime = mime || undefined;
-  mediaRecorder = new MediaRecorder(stream, mime?{mimeType:mime}:{ });
-  mediaRecorder.ondataavailable = e=>{
-    if(e.data && e.data.size>0){
-      chunks.push({blob:e.data, ts: Date.now()});
-      pruneBuffer();
-    }
-  };
-  mediaRecorder.onstop = ()=>{ isRecording=false; updateUI(); }
-  mediaRecorder.start(500);
-  isRecording=true; updateUI();
-}
-
-function pruneBuffer(){
-  const cutoff = Date.now() - bufferSeconds*1000;
-  while(chunks.length && chunks[0].ts < cutoff){ chunks.shift(); }
-}
-
-function getLastWindowBlob(windowMs){
-  pruneBuffer();
-  if(!chunks.length) return null;
-  const cutoff = Date.now()-windowMs;
-  const selected=[];
-  for(let i=chunks.length-1;i>=0;i--){
-    selected.push(chunks[i]);
-    if(chunks[i].ts <= cutoff) break;
+    if (delayLabel) delayLabel.textContent = (targetDelayMs/1000).toFixed(1) + 's';
+    if (fpsLabel) fpsLabel.textContent = String(targetFps);
   }
-  selected.reverse();
-  const blobs = selected.map(c=>c.blob);
-  if(!blobs.length) return null;
-  return new Blob(blobs, { type: recorderMime || blobs[0].type || 'video/webm' });
-}
 
-async function startDelayView(){
-  delayModeBtn.disabled=false;
-  if(delayTimer) clearInterval(delayTimer);
-  await refreshDelayOnce(true);
-  delayTimer = setInterval(()=> refreshDelayOnce(false), 800);
-}
+  function pickDims() {
+    // 480p for stability by default; uncheck perfMode to try 720p
+    if (perfMode && perfMode.checked) return { w: 854, h: 480 };
+    return { w: 1280, h: 720 };
+  }
 
-async function refreshDelayOnce(initial){
-  if(!isRecording) return;
-  if(updatingDelay) return;
-  updatingDelay=true;
-  try{
-    const blob = getLastWindowBlob(lastReplayMs);
-    if(!blob){ updatingDelay=false; return; }
-    const url = URL.createObjectURL(blob);
-    delayVideo.srcObject=null;
-    delayVideo.src = url;
-    delayVideo.muted=true;
-    await delayVideo.play().catch(()=>{});
-  }finally{ updatingDelay=false; }
-}
+  function resizeCanvasTo(d){ screen.width = d.w; screen.height = d.h; }
 
-let replayLock=false;
-async function playReplay(windowMs){
-  if(replayLock) return;
-  replayLock=true; replayBtn.disabled=true; replayAgainBtn.disabled=true;
-  try{
-    const blob = getLastWindowBlob(windowMs);
-    if(!blob){ alert('Need a bit more buffer before replay.'); return; }
-    const pause = pauseDuringReplay.checked;
-    if(pause && isRecording){ try{ mediaRecorder.stop(); }catch(e){} }
-    if(lastReplayBlobURL) URL.revokeObjectURL(lastReplayBlobURL);
-    lastReplayBlobURL = URL.createObjectURL(blob);
-    replayVideo.srcObject=null; replayVideo.src=lastReplayBlobURL;
-    replayVideo.loop = loopReplay; replayVideo.muted=true;
-    replayVideo.playbackRate = defaultSlowMo.checked ? 0.5 : 1.0;
-    isReplaying=true; modePill.textContent='REPLAY'; modePill.classList.add('replay');
-    replayVideo.hidden=false;
-    await replayVideo.play().catch(()=>{ replayVideo.controls=true; });
-    replayVideo.onended = async ()=>{
-      if(!loopReplay){
-        isReplaying=false; modePill.textContent='LIVE'; modePill.classList.remove('replay');
-        replayVideo.hidden=true; replayVideo.removeAttribute('src'); replayVideo.load();
-        if(pause && !isRecording){ startRecording(); }
-      }
+  function makeRingBuffer(seconds, fps, dims){
+    const frames = Math.max(2, Math.ceil((seconds + HEADROOM_MS/1000) * fps));
+    const canvases = new Array(frames);
+    for (let i=0;i<frames;i++){
+      const c = document.createElement('canvas');
+      c.width = dims.w; c.height = dims.h;
+      canvases[i] = c;
+    }
+    return { canvases, times: new Float64Array(frames), size: frames, head: 0, w: dims.w, h: dims.h };
+  }
+
+  function rbPush(ts){
+    const c = rb.canvases[rb.head];
+    const cctx = c.getContext('2d');
+    cctx.drawImage(live, 0, 0, rb.w, rb.h);
+    rb.times[rb.head] = ts;
+    rb.head = (rb.head + 1) % rb.size;
+  }
+
+  function rbDuration(){
+    const newest = (rb.head - 1 + rb.size) % rb.size;
+    const oldest = rb.head;
+    const tNew = rb.times[newest];
+    const tOld = rb.times[oldest];
+    if (!tNew || !tOld || tNew <= 0 || tOld <= 0) return 0;
+    const d = tNew - tOld;
+    return d > 0 ? d/1000 : 0;
+  }
+
+  function rbFind(ts){
+    // linearize circular buffer to oldest..newest, then binary search by timestamp
+    const order = [];
+    for (let i=0;i<rb.size;i++){ order.push((rb.head + i) % rb.size); }
+    const filled = order.filter(idx => rb.times[idx] > 0);
+    if (filled.length === 0) return null;
+
+    let lo = 0, hi = filled.length - 1, ans = filled[filled.length - 1];
+    while (lo <= hi){
+      const mid = (lo + hi) >> 1;
+      const idx = filled[mid];
+      if (rb.times[idx] >= ts){ ans = idx; hi = mid - 1; }
+      else lo = mid + 1;
+    }
+    return ans;
+  }
+
+  async function start(){
+    if (running) return;
+    if (!secure){ setStatus('Needs HTTPS for camera'); alert('Use HTTPS (GitHub Pages) for camera on iOS.'); return; }
+
+    const dims = pickDims();
+    const constraints = {
+      video: { facingMode: 'environment', width: { ideal: dims.w }, height: { ideal: dims.h }, frameRate: { ideal: 30, max: 60 } },
+      audio: false
     };
-    replayAgainBtn.textContent = `Replay Again (${Math.round(windowMs/1000)}s)`;
-    replayAgainBtn.onclick = ()=> playReplay(windowMs);
-  }finally{
-    setTimeout(()=>{ replayLock=false; replayBtn.disabled=false; replayAgainBtn.disabled=false; }, 600);
-    updateUI();
-  }
-}
 
-function saveLast(windowMs){
-  const blob = getLastWindowBlob(windowMs);
-  if(!blob){ alert('Need more buffer before saving.'); return; }
-  const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-  const name = `clip_${Math.round(windowMs/1000)}s_${new Date().toISOString().replace(/[:.]/g,'-')}.${ext}`;
-  const url = URL.createObjectURL(blob);
-  if(isiOS()){
-    const w = window.open(url, '_blank');
-    if(!w){ alert('Popup blocked. Allow popups to save the clip.'); }
-  } else {
-    downloadLink.href = url; downloadLink.download = name; downloadLink.click();
-    setTimeout(()=> URL.revokeObjectURL(url), 5000);
-  }
-}
-
-async function applyZoom(){
-  if(track && usePTZZoom){
-    try{
-      const caps = track.getCapabilities();
-      const min = caps.zoom?.min ?? 1, max = caps.zoom?.max ?? 3;
-      const target = Math.min(max, Math.max(min, zoomLevel));
-      await track.applyConstraints({ advanced: [{ zoom: target }] });
-      zoomLevel = (track.getSettings().zoom ?? target);
-    }catch(e){
-      usePTZZoom=false;
-      delayVideo.style.transform = `scale(${zoomLevel})`;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (e) {
+      setStatus('camera blocked');
+      alert('Allow camera in iOS Settings > Safari > Camera.\n\n' + e.message);
+      return;
     }
-  } else {
-    delayVideo.style.transform = `scale(${zoomLevel})`;
-  }
-  zoomStatus.innerHTML = `Zoom: <strong>${zoomLevel.toFixed(1)}×${usePTZZoom?' (optical)':''}</strong>`;
-}
-function zoomIn(){ zoomLevel = Math.min(3.0, zoomLevel+0.1); applyZoom(); }
-function zoomOut(){ zoomLevel = Math.max(1.0, zoomLevel-0.1); applyZoom(); }
-function toggleMirror(){
-  const mirrored = delayVideo.style.transform.includes('scaleX(-1)');
-  if(mirrored){
-    delayVideo.style.transform = delayVideo.style.transform.replace('scaleX(-1) ','').trim();
-    mirrorBtn.textContent='Mirror Off';
-  }else{
-    delayVideo.style.transform = `scaleX(-1) ${delayVideo.style.transform}`.trim();
-    mirrorBtn.textContent='Mirror On';
-  }
-}
-function toggleLoop(){ loopReplay=!loopReplay; loopBtn.textContent = loopReplay?'Loop On':'Loop Off'; }
-function toggleSlowMo(){
-  if(isReplaying){
-    replayVideo.playbackRate = (replayVideo.playbackRate===1?0.5:1);
-    slowMoBtn.textContent = replayVideo.playbackRate===1 ? 'Slow-mo (0.5×)' : 'Normal (1×)';
-  } else {
-    defaultSlowMo.checked = !defaultSlowMo.checked;
-  }
-}
-async function enableKeepAwake(){
-  try{ wakeLock = await navigator.wakeLock.request('screen'); keepAwakeBtn.textContent='Release Awake'; }
-  catch(e){ console.warn('WakeLock not available', e); }
-}
-async function toggleKeepAwake(){
-  if(wakeLock){ await wakeLock.release(); wakeLock=null; keepAwakeBtn.textContent='Keep Awake'; }
-  else { await enableKeepAwake(); }
-}
-function resetAll(){
-  try{ mediaRecorder?.stop(); }catch(e){}
-  isRecording=false; chunks=[]; lastReplayMs=15000; bufferSeconds=180;
-  zoomLevel=1.0; usePTZZoom=false;
-  chips.forEach(c=>c.classList.remove('active')); [...chips].find(c=>c.dataset.delay==='15')?.classList.add('active');
-  customDelayInput.value=15; pauseDuringReplay.checked=false; defaultSlowMo.checked=false; loopReplay=false;
-  loopBtn.textContent='Loop Off'; slowMoBtn.textContent='Slow-mo (0.5×)';
-  delayVideo.style.transform='scale(1)'; mirrorBtn.textContent='Mirror Off';
-  if(delayTimer) clearInterval(delayTimer);
-  if(stream){ startRecording(); startDelayView(); }
-  updateUI();
-}
 
-startBtn.addEventListener('click', start);
-delayModeBtn.addEventListener('click', ()=>{});
-replayBtn.addEventListener('click', ()=> playReplay(lastReplayMs));
-replayAgainBtn.addEventListener('click', ()=> playReplay(lastReplayMs));
-saveClipBtn.addEventListener('click', ()=> saveLast(Math.max(lastReplayMs,20000)));
-slowMoBtn.addEventListener('click', toggleSlowMo);
-loopBtn.addEventListener('click', toggleLoop);
-zoomInBtn.addEventListener('click', zoomIn);
-zoomOutBtn.addEventListener('click', zoomOut);
-mirrorBtn.addEventListener('click', toggleMirror);
-keepAwakeBtn.addEventListener('click', toggleKeepAwake);
-resetBtn.addEventListener('click', resetAll);
+    live.srcObject = stream;
+    live.setAttribute('playsinline','true');
+    try { await live.play(); } catch {}
 
-updateUI();
+    resizeCanvasTo(dims);
+    window.addEventListener('resize', () => resizeCanvasTo(dims));
+
+    rb = makeRingBuffer(targetDelayMs/1000 + HEADROOM_MS/1000, targetFps, dims);
+    for (let i=0;i<rb.size;i++){ rb.times[i] = 0; }
+
+    running = true;
+    playing = true;
+    startCapture();
+    startDraw();
+    setUI('run');
+    setStatus(`running ${dims.w}x${dims.h} rb=${rb.size} perf=${perfMode && perfMode.checked?'on':'off'}`);
+  }
+
+  function stop(){
+    running = false;
+    playing = false;
+    if (captureRAF) cancelAnimationFrame(captureRAF);
+    if (drawRAF) cancelAnimationFrame(drawRAF);
+    captureRAF = drawRAF = null;
+    if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
+    rb = null;
+    // force a clear without resizing CSS box
+    const w = screen.width, h = screen.height;
+    screen.width = w; screen.height = h;
+    setUI('idle');
+    setStatus('idle');
+  }
+
+  function startCapture(){
+    const capInterval = 1000 / targetFps;
+    let last = performance.now();
+
+    const loop = (now) => {
+      if (!running) return;
+      captureRAF = requestAnimationFrame(loop);
+
+      if (now - last >= capInterval - 2){
+        last = now;
+        try { rbPush(now); } catch {}
+      }
+      if (bufSec) bufSec.textContent = rb ? rbDuration().toFixed(1) : '0.0';
+    };
+
+    captureRAF = requestAnimationFrame(loop);
+  }
+
+  function startDraw(){
+    let lastDraw = performance.now();
+    let framesDrawn = 0, tick = performance.now();
+
+    const loop = (now) => {
+      if (!running) return;
+      drawRAF = requestAnimationFrame(loop);
+
+      if (now - lastDraw < 1000/60 - 2) return; // cap ~60Hz draw
+      lastDraw = now;
+
+      if (!playing || !rb) return;
+
+      const wantTs = now - targetDelayMs;
+      const idx = rbFind(wantTs);
+      if (idx == null) return;
+
+      try { ctx.drawImage(rb.canvases[idx], 0, 0, screen.width, screen.height); } catch {}
+
+      const newest = (rb.head - 1 + rb.size) % rb.size;
+      const latestTs = rb.times[newest] || now;
+      if (lagSec) lagSec.textContent = ((latestTs - wantTs)/1000).toFixed(1);
+
+      framesDrawn++;
+      const dt = now - tick;
+      if (dt >= 1000){ if (drawFps) drawFps.textContent = String(framesDrawn); framesDrawn = 0; tick = now; }
+    };
+
+    drawRAF = requestAnimationFrame(loop);
+  }
+
+  // Controls
+  if (btnStart) btnStart.addEventListener('click', start, { passive: true });
+  if (btnStop) btnStop.addEventListener('click', stop, { passive: true });
+  if (btnPlayPause) btnPlayPause.addEventListener('click', () => {
+    if (!running) return;
+    playing = !playing;
+    btnPlayPause.textContent = playing ? 'Pause' : 'Play';
+  });
+
+  if (delayRange) delayRange.addEventListener('input', e => {
+    const v = Number(e.target.value) || 12;
+    targetDelayMs = Math.max(1000, Math.min(30000, Math.round(v*1000)));
+    if (delayLabel) delayLabel.textContent = v.toFixed(1) + 's';
+  });
+
+  if (fpsRange) fpsRange.addEventListener('input', e => {
+    const v = parseInt(e.target.value, 10) || 20;
+    targetFps = Math.max(5, Math.min(60, v));
+    if (fpsLabel) fpsLabel.textContent = String(targetFps);
+  });
+
+  // Init
+  setUI('idle');
+  if (!secure) setStatus('Needs HTTPS for camera');
+})();
