@@ -1,228 +1,380 @@
-// Safari-stable video delay with a fixed-size ring buffer and canvas reuse.
-// Simple build: rear camera only, performance-first defaults.
-(() => {
-  const live = document.getElementById('live');
-  const screen = document.getElementById('screen');
-  const ctx = screen.getContext('2d', { alpha: false });
+// Coach Replay App
+// Focus: stability first. Replay last X seconds, optional pause of recorder during replay, save clip, slow-mo, keep-awake, zoom, reset.
 
-  const btnStart = document.getElementById('btnStart');
-  const btnStop = document.getElementById('btnStop');
-  const btnPlayPause = document.getElementById('btnPlayPause');
+const liveVideo = document.getElementById('liveVideo');
+const replayVideo = document.getElementById('replayVideo');
 
-  const delayRange = document.getElementById('delayRange');
-  const delayLabel = document.getElementById('delayLabel');
-  const fpsRange = document.getElementById('fpsRange');
-  const fpsLabel = document.getElementById('fpsLabel');
-  const perfMode = document.getElementById('perfMode');
+const startBtn = document.getElementById('startBtn');
+const replayBtn = document.getElementById('replayBtn');
+const replayAgainBtn = document.getElementById('replayAgainBtn');
+const saveClipBtn = document.getElementById('saveClipBtn');
+const slowMoBtn = document.getElementById('slowMoBtn');
+const loopBtn = document.getElementById('loopBtn');
+const zoomInBtn = document.getElementById('zoomInBtn');
+const zoomOutBtn = document.getElementById('zoomOutBtn');
+const mirrorBtn = document.getElementById('mirrorBtn');
+const keepAwakeBtn = document.getElementById('keepAwakeBtn');
+const resetBtn = document.getElementById('resetBtn');
 
-  const bufSec = document.getElementById('bufSec');
-  const lagSec = document.getElementById('lagSec');
-  const drawFps = document.getElementById('drawFps');
-  const statusEl = document.getElementById('status');
+const bufferStatus = document.getElementById('bufferStatus');
+const wakeStatus = document.getElementById('wakeStatus');
+const zoomStatus = document.getElementById('zoomStatus');
+const modePill = document.getElementById('modePill');
 
-  let stream = null;
-  let running = false;
-  let playing = true;
+const pauseDuringReplay = document.getElementById('pauseDuringReplay');
+const defaultSlowMo = document.getElementById('defaultSlowMo');
 
-  let targetDelayMs = 12000; // default 12s
-  let targetFps = 20;        // default 20 FPS for iOS stability
-  let captureRAF = null;
-  let drawRAF = null;
+const chips = document.querySelectorAll('.chip[data-delay]');
+const customDelayInput = document.getElementById('customDelay');
+const downloadLink = document.getElementById('downloadLink');
 
-  // Ring buffer state
-  let rb = null; // { canvases: [], times: Float64Array, size, head, w, h }
-  const HEADROOM_MS = 2000;
+// State
+let stream = null;
+let mediaRecorder = null;
+let chunks = []; // {blob, timestamp}
+let bufferSeconds = 120; // rolling buffer length
+let isRecording = false;
+let isReplaying = false;
+let wakeLock = null;
+let zoomLevel = 1.0;
+let usePTZZoom = false;
+let track = null;
+let loopReplay = false;
+let lastReplayMs = 15000;
+let lastBlobURL = null;
+let recorderMime = null;
 
-  const secure = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
-
-  function setStatus(msg){ if (statusEl) statusEl.textContent = msg; }
-  function setUI(state){
-    if (btnStart) btnStart.disabled = (state !== 'idle');
-    if (btnStop) btnStop.disabled = (state === 'idle');
-    if (btnPlayPause) {
-      btnPlayPause.disabled = (state === 'idle');
-      btnPlayPause.textContent = playing ? 'Pause' : 'Play';
-    }
-    if (delayLabel) delayLabel.textContent = (targetDelayMs/1000).toFixed(1) + 's';
-    if (fpsLabel) fpsLabel.textContent = String(targetFps);
-  }
-
-  function pickDims() {
-    // 480p for stability by default; uncheck perfMode to try 720p
-    if (perfMode && perfMode.checked) return { w: 854, h: 480 };
-    return { w: 1280, h: 720 };
-  }
-
-  function resizeCanvasTo(d){ screen.width = d.w; screen.height = d.h; }
-
-  function makeRingBuffer(seconds, fps, dims){
-    const frames = Math.max(2, Math.ceil((seconds + HEADROOM_MS/1000) * fps));
-    const canvases = new Array(frames);
-    for (let i=0;i<frames;i++){
-      const c = document.createElement('canvas');
-      c.width = dims.w; c.height = dims.h;
-      canvases[i] = c;
-    }
-    return { canvases, times: new Float64Array(frames), size: frames, head: 0, w: dims.w, h: dims.h };
-  }
-
-  function rbPush(ts){
-    const c = rb.canvases[rb.head];
-    const cctx = c.getContext('2d');
-    cctx.drawImage(live, 0, 0, rb.w, rb.h);
-    rb.times[rb.head] = ts;
-    rb.head = (rb.head + 1) % rb.size;
-  }
-
-  function rbDuration(){
-    const newest = (rb.head - 1 + rb.size) % rb.size;
-    const oldest = rb.head;
-    const tNew = rb.times[newest];
-    const tOld = rb.times[oldest];
-    if (!tNew || !tOld || tNew <= 0 || tOld <= 0) return 0;
-    const d = tNew - tOld;
-    return d > 0 ? d/1000 : 0;
-  }
-
-  function rbFind(ts){
-    // linearize circular buffer to oldest..newest, then binary search by timestamp
-    const order = [];
-    for (let i=0;i<rb.size;i++){ order.push((rb.head + i) % rb.size); }
-    const filled = order.filter(idx => rb.times[idx] > 0);
-    if (filled.length === 0) return null;
-
-    let lo = 0, hi = filled.length - 1, ans = filled[filled.length - 1];
-    while (lo <= hi){
-      const mid = (lo + hi) >> 1;
-      const idx = filled[mid];
-      if (rb.times[idx] >= ts){ ans = idx; hi = mid - 1; }
-      else lo = mid + 1;
-    }
-    return ans;
-  }
-
-  async function start(){
-    if (running) return;
-    if (!secure){ setStatus('Needs HTTPS for camera'); alert('Use HTTPS (GitHub Pages) for camera on iOS.'); return; }
-
-    const dims = pickDims();
-    const constraints = {
-      video: { facingMode: 'environment', width: { ideal: dims.w }, height: { ideal: dims.h }, frameRate: { ideal: 30, max: 60 } },
-      audio: false
-    };
-
-    try {
-      stream = await navigator.mediaDevices.getUserMedia(constraints);
-    } catch (e) {
-      setStatus('camera blocked');
-      alert('Allow camera in iOS Settings > Safari > Camera.\n\n' + e.message);
-      return;
-    }
-
-    live.srcObject = stream;
-    live.setAttribute('playsinline','true');
-    try { await live.play(); } catch {}
-
-    resizeCanvasTo(dims);
-    window.addEventListener('resize', () => resizeCanvasTo(dims));
-
-    rb = makeRingBuffer(targetDelayMs/1000 + HEADROOM_MS/1000, targetFps, dims);
-    for (let i=0;i<rb.size;i++){ rb.times[i] = 0; }
-
-    running = true;
-    playing = true;
-    startCapture();
-    startDraw();
-    setUI('run');
-    setStatus(`running ${dims.w}x${dims.h} rb=${rb.size} perf=${perfMode && perfMode.checked?'on':'off'}`);
-  }
-
-  function stop(){
-    running = false;
-    playing = false;
-    if (captureRAF) cancelAnimationFrame(captureRAF);
-    if (drawRAF) cancelAnimationFrame(drawRAF);
-    captureRAF = drawRAF = null;
-    if (stream) { stream.getTracks().forEach(t=>t.stop()); stream = null; }
-    rb = null;
-    // force a clear without resizing CSS box
-    const w = screen.width, h = screen.height;
-    screen.width = w; screen.height = h;
-    setUI('idle');
-    setStatus('idle');
-  }
-
-  function startCapture(){
-    const capInterval = 1000 / targetFps;
-    let last = performance.now();
-
-    const loop = (now) => {
-      if (!running) return;
-      captureRAF = requestAnimationFrame(loop);
-
-      if (now - last >= capInterval - 2){
-        last = now;
-        try { rbPush(now); } catch {}
+// Persisted settings
+function loadSettings(){
+  try{
+    const s = JSON.parse(localStorage.getItem('coachReplaySettings')||'{}');
+    if(s.pauseDuringReplay) pauseDuringReplay.checked = true;
+    if(s.defaultSlowMo) defaultSlowMo.checked = true;
+    if(s.zoomLevel) zoomLevel = s.zoomLevel;
+    if(s.lastReplayMs) lastReplayMs = s.lastReplayMs;
+    if(s.delayChoice){
+      chips.forEach(c => c.classList.toggle('active', c.dataset.delay == s.delayChoice));
+      if(!['10','15','20','30'].includes(String(s.delayChoice))) {
+        customDelayInput.value = Math.max(3, Math.min(120, Math.round(Number(s.delayChoice)||15)));
+        document.querySelector('.chip.custom').classList.add('active');
       }
-      if (bufSec) bufSec.textContent = rb ? rbDuration().toFixed(1) : '0.0';
-    };
+    }
+  }catch(e){}
+  applyZoom();
+  updateUI();
+}
 
-    captureRAF = requestAnimationFrame(loop);
+function saveSettings(){
+  const activeChip = [...chips].find(c => c.classList.contains('active'));
+  const delayChoice = activeChip ? activeChip.dataset.delay : customDelayInput.value;
+  const s = {
+    pauseDuringReplay: pauseDuringReplay.checked,
+    defaultSlowMo: defaultSlowMo.checked,
+    zoomLevel,
+    lastReplayMs,
+    delayChoice
+  };
+  localStorage.setItem('coachReplaySettings', JSON.stringify(s));
+}
+
+function updateUI(){
+  bufferStatus.innerHTML = `Buffering: <strong>${isRecording ? 'On' : 'Off'}</strong>`;
+  zoomStatus.innerHTML = `Zoom: <strong>${zoomLevel.toFixed(1)}×${usePTZZoom?' (optical)':''}</strong>`;
+  modePill.textContent = isReplaying ? 'REPLAY' : 'LIVE';
+  modePill.classList.toggle('replay', isReplaying);
+  modePill.classList.toggle('live', !isReplaying);
+
+  const started = !!stream;
+  replayBtn.disabled = !started;
+  replayAgainBtn.disabled = !started;
+  saveClipBtn.disabled = !started;
+  slowMoBtn.disabled = !started;
+  loopBtn.disabled = !started;
+}
+
+function setDelayFromChip(elem){
+  chips.forEach(c=>c.classList.remove('active'));
+  elem.classList.add('active');
+  document.querySelector('.chip.custom').classList.remove('active');
+  lastReplayMs = Number(elem.dataset.delay)*1000;
+  saveSettings();
+}
+
+chips.forEach(chip => chip.addEventListener('click', ()=> setDelayFromChip(chip)));
+customDelayInput.addEventListener('change', ()=>{
+  chips.forEach(c=>c.classList.remove('active'));
+  document.querySelector('.chip.custom').classList.add('active');
+  const v = Math.max(3, Math.min(120, Math.round(Number(customDelayInput.value)||15)));
+  customDelayInput.value = v;
+  lastReplayMs = v*1000;
+  saveSettings();
+});
+
+async function start(){
+  startBtn.disabled = true;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: false
+    });
+    liveVideo.srcObject = stream;
+    track = stream.getVideoTracks()[0];
+    try{
+      const caps = track.getCapabilities?.();
+      if(caps && 'zoom' in caps){
+        usePTZZoom = true;
+        // initialize to 1.0x relative scale (min may not be 1)
+        const s = track.getSettings?.();
+        if(s && s.zoom) zoomLevel = s.zoom;
+      }
+    }catch(e){}
+    startRecording();
+    enableKeepAwake();
+  }catch(err){
+    alert('Camera permission failed. Please allow camera access and reload.');
+    console.error(err);
+  }finally{
+    startBtn.disabled = false;
+  }
+}
+
+function startRecording(){
+  if(!stream) return;
+  // Prefer MP4/H264 on Safari/iOS, otherwise use webm
+  const types = [
+    'video/mp4;codecs="avc1.42E01E"', 
+    'video/webm;codecs="vp9"',
+    'video/webm;codecs="vp8"',
+    'video/webm'
+  ];
+  let mimeType = "";
+  for(const t of types){ if(MediaRecorder.isTypeSupported(t)){ mimeType = t; break; } }
+  recorderMime = mimeType || undefined;
+  mediaRecorder = new MediaRecorder(stream, mimeType?{mimeType}:{});
+
+  mediaRecorder.ondataavailable = e => {
+    if(e.data && e.data.size > 0){
+      chunks.push({ blob: e.data, ts: Date.now() });
+      pruneBuffer();
+    }
+  };
+  mediaRecorder.onstop = ()=>{ isRecording = false; updateUI(); };
+  mediaRecorder.start(1000); // gather data every second
+  isRecording = true;
+  updateUI();
+}
+
+function pruneBuffer(){
+  const cutoff = Date.now() - bufferSeconds*1000;
+  while(chunks.length && chunks[0].ts < cutoff){
+    chunks.shift();
+  }
+}
+
+function getLastWindowBlob(windowMs){
+  pruneBuffer();
+  if(!chunks.length) return null;
+  const cutoff = Date.now() - windowMs;
+  const selected = [];
+  for(let i = chunks.length-1; i >= 0; i--){
+    selected.push(chunks[i]);
+    if(chunks[i].ts <= cutoff) break;
+  }
+  selected.reverse();
+  const blobs = selected.map(c=>c.blob);
+  if(!blobs.length) return null;
+  return new Blob(blobs, { type: recorderMime || blobs[0].type || 'video/webm' });
+}
+
+async function playReplay(windowMs, again=false){
+  if(!stream) return;
+  const blob = getLastWindowBlob(windowMs);
+  if(!blob){ alert('Not enough buffered video yet.'); return; }
+
+  const pause = pauseDuringReplay.checked;
+  if(pause && isRecording){
+    try{ mediaRecorder.stop(); }catch(e){}
   }
 
-  function startDraw(){
-    let lastDraw = performance.now();
-    let framesDrawn = 0, tick = performance.now();
+  if(lastBlobURL) URL.revokeObjectURL(lastBlobURL);
+  lastBlobURL = URL.createObjectURL(blob);
 
-    const loop = (now) => {
-      if (!running) return;
-      drawRAF = requestAnimationFrame(loop);
+  replayVideo.srcObject = null;
+  replayVideo.src = lastBlobURL;
+  replayVideo.muted = true;
+  replayVideo.playbackRate = defaultSlowMo.checked ? 0.5 : 1.0;
+  replayVideo.loop = loopReplay;
 
-      if (now - lastDraw < 1000/60 - 2) return; // cap ~60Hz draw
-      lastDraw = now;
+  liveVideo.hidden = true;
+  replayVideo.hidden = false;
+  isReplaying = true;
+  updateUI();
 
-      if (!playing || !rb) return;
-
-      const wantTs = now - targetDelayMs;
-      const idx = rbFind(wantTs);
-      if (idx == null) return;
-
-      try { ctx.drawImage(rb.canvases[idx], 0, 0, screen.width, screen.height); } catch {}
-
-      const newest = (rb.head - 1 + rb.size) % rb.size;
-      const latestTs = rb.times[newest] || now;
-      if (lagSec) lagSec.textContent = ((latestTs - wantTs)/1000).toFixed(1);
-
-      framesDrawn++;
-      const dt = now - tick;
-      if (dt >= 1000){ if (drawFps) drawFps.textContent = String(framesDrawn); framesDrawn = 0; tick = now; }
-    };
-
-    drawRAF = requestAnimationFrame(loop);
+  try{
+    await replayVideo.play();
+  }catch(e){
+    // Some browsers require user gesture; if fail, show controls and instruct tap
+    replayVideo.controls = true;
   }
 
-  // Controls
-  if (btnStart) btnStart.addEventListener('click', start, { passive: true });
-  if (btnStop) btnStop.addEventListener('click', stop, { passive: true });
-  if (btnPlayPause) btnPlayPause.addEventListener('click', () => {
-    if (!running) return;
-    playing = !playing;
-    btnPlayPause.textContent = playing ? 'Pause' : 'Play';
-  });
+  replayVideo.onended = ()=>{
+    if(!loopReplay){
+      exitReplay();
+      if(pause && !isRecording){
+        // give recorder a moment to settle
+        startRecording();
+      }
+    }
+  };
 
-  if (delayRange) delayRange.addEventListener('input', e => {
-    const v = Number(e.target.value) || 12;
-    targetDelayMs = Math.max(1000, Math.min(30000, Math.round(v*1000)));
-    if (delayLabel) delayLabel.textContent = v.toFixed(1) + 's';
-  });
+  // For "Replay Again" button to know what length to use
+  replayAgainBtn.textContent = `Replay Again (${Math.round(windowMs/1000)}s)`;
+  replayAgainBtn.onclick = ()=> playReplay(windowMs, true);
+}
 
-  if (fpsRange) fpsRange.addEventListener('input', e => {
-    const v = parseInt(e.target.value, 10) || 20;
-    targetFps = Math.max(5, Math.min(60, v));
-    if (fpsLabel) fpsLabel.textContent = String(targetFps);
-  });
+function exitReplay(){
+  replayVideo.pause();
+  replayVideo.removeAttribute('src');
+  replayVideo.load();
+  replayVideo.hidden = true;
+  liveVideo.hidden = false;
+  isReplaying = false;
+  updateUI();
+}
 
-  // Init
-  setUI('idle');
-  if (!secure) setStatus('Needs HTTPS for camera');
-})();
+function saveLast(windowMs){
+  const blob = getLastWindowBlob(windowMs);
+  if(!blob){ alert('Not enough buffered video yet.'); return; }
+  const ext = (blob.type.includes('mp4') ? 'mp4' : 'webm');
+  const name = `clip_last_${Math.round(windowMs/1000)}s_${new Date().toISOString().replace(/[:.]/g,'-')}.${ext}`;
+  const url = URL.createObjectURL(blob);
+  downloadLink.href = url;
+  downloadLink.download = name;
+  downloadLink.click();
+  setTimeout(()=> URL.revokeObjectURL(url), 5000);
+}
+
+// Zoom
+async function applyZoom(){
+  if(usePTZZoom && track){
+    try{
+      const caps = track.getCapabilities();
+      const s = track.getSettings();
+      const min = caps.zoom?.min ?? 1, max = caps.zoom?.max ?? 3;
+      const next = Math.min(max, Math.max(min, zoomLevel));
+      await track.applyConstraints({ advanced: [{ zoom: next }] });
+      zoomLevel = (track.getSettings().zoom ?? next);
+    }catch(e){
+      // fallback to CSS
+      usePTZZoom = false;
+      liveVideo.style.transform = `scale(${zoomLevel})`;
+    }
+  } else {
+    liveVideo.style.transform = `scale(${zoomLevel})`;
+  }
+  zoomStatus.innerHTML = `Zoom: <strong>${zoomLevel.toFixed(1)}×${usePTZZoom?' (optical)':''}</strong>`;
+  saveSettings();
+}
+
+function zoomIn(){ zoomLevel = Math.min(3.0, (zoomLevel + 0.1)); applyZoom(); }
+function zoomOut(){ zoomLevel = Math.max(1.0, (zoomLevel - 0.1)); applyZoom(); }
+
+// Mirror
+function toggleMirror(){
+  const mirrored = liveVideo.style.transform.includes('scaleX(-1)');
+  if(mirrored){
+    liveVideo.style.transform = liveVideo.style.transform.replace('scaleX(-1) ','').trim();
+    mirrorBtn.textContent = 'Mirror Off';
+  }else{
+    liveVideo.style.transform = `scaleX(-1) ${liveVideo.style.transform}`.trim();
+    mirrorBtn.textContent = 'Mirror On';
+  }
+}
+
+// Loop + Slow‑mo
+function toggleLoop(){
+  loopReplay = !loopReplay;
+  loopBtn.textContent = loopReplay ? 'Loop On' : 'Loop Off';
+  replayVideo.loop = loopReplay;
+}
+function toggleSlowMo(){
+  if(isReplaying){
+    replayVideo.playbackRate = (replayVideo.playbackRate === 1 ? 0.5 : 1);
+    slowMoBtn.textContent = replayVideo.playbackRate === 1 ? 'Slow‑mo (0.5×)' : 'Normal (1×)';
+  } else {
+    defaultSlowMo.checked = !defaultSlowMo.checked;
+    saveSettings();
+  }
+}
+
+// Keep Awake
+async function enableKeepAwake(){
+  try{
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeStatus.innerHTML = 'Keep Awake: <strong>On</strong>';
+    keepAwakeBtn.textContent = 'Release Awake';
+    wakeLock.addEventListener('release', ()=>{
+      wakeStatus.innerHTML = 'Keep Awake: <strong>Off</strong>';
+      keepAwakeBtn.textContent = 'Keep Awake';
+    });
+  }catch(e){
+    alert('Wake Lock not supported; consider keeping the screen active manually.');
+  }
+}
+async function toggleKeepAwake(){
+  if(wakeLock){ await wakeLock.release(); wakeLock = null; }
+  else { await enableKeepAwake(); }
+}
+
+// Reset
+function resetDefaults(){
+  // Stop replay if active
+  if(isReplaying) exitReplay();
+  // Stop recorder
+  try{ mediaRecorder?.stop(); }catch(e){}
+  isRecording = false;
+  chunks = [];
+  bufferSeconds = 120;
+  zoomLevel = 1.0;
+  usePTZZoom = false;
+
+  // UI defaults
+  chips.forEach(c=>c.classList.remove('active'));
+  [...chips].find(c=>c.dataset.delay==='15')?.classList.add('active');
+  customDelayInput.value = 15;
+  pauseDuringReplay.checked = false;
+  defaultSlowMo.checked = false;
+  loopReplay = false;
+  loopBtn.textContent = 'Loop Off';
+  slowMoBtn.textContent = 'Slow‑mo (0.5×)';
+  liveVideo.style.transform = 'scale(1)';
+  mirrorBtn.textContent = 'Mirror Off';
+
+  saveSettings();
+  updateUI();
+  if(stream){ startRecording(); }
+}
+
+// Wire up
+startBtn.addEventListener('click', start);
+replayBtn.addEventListener('click', ()=> playReplay(lastReplayMs));
+replayAgainBtn.addEventListener('click', ()=> playReplay(lastReplayMs));
+saveClipBtn.addEventListener('click', ()=> saveLast(Math.max(lastReplayMs, 20000))); // give them time per Jesse's note
+slowMoBtn.addEventListener('click', toggleSlowMo);
+loopBtn.addEventListener('click', toggleLoop);
+zoomInBtn.addEventListener('click', zoomIn);
+zoomOutBtn.addEventListener('click', zoomOut);
+mirrorBtn.addEventListener('click', toggleMirror);
+keepAwakeBtn.addEventListener('click', toggleKeepAwake);
+resetBtn.addEventListener('click', resetDefaults);
+pauseDuringReplay.addEventListener('change', saveSettings);
+defaultSlowMo.addEventListener('change', saveSettings);
+
+window.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && wakeLock){
+    // Re-request on some platforms
+    enableKeepAwake();
+  }
+});
+
+loadSettings();
