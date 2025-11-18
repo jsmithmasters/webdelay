@@ -6,6 +6,85 @@
   const ctx = screen.getContext('2d', { alpha: false });
 
   const btnStart = document.getElementById('btnStart');
+
+  // === Rolling 15s recorder for Replay/Save (non-invasive) ===
+  let __mr = null;
+  let __mrChunks = []; // {blob, t}
+  const __MR_TIMESLICE = 1000;
+  const __CLIP_MS = 15000;
+
+  function __startRecorder(stream) {
+    try {
+      __stopRecorder();
+      __mr = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      __mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          __mrChunks.push({ blob: e.data, t: performance.now() });
+          const cutoff = performance.now() - __CLIP_MS - 1000;
+          while (__mrChunks.length && __mrChunks[0].t < cutoff) __mrChunks.shift();
+        }
+      };
+      __mr.start(__MR_TIMESLICE);
+    } catch (err) {
+      console.warn('MediaRecorder not available for replay/save:', err);
+      __mr = null;
+    }
+  }
+  function __stopRecorder() {
+    if (__mr) {
+      try { __mr.stop(); } catch {}
+      __mr = null;
+    }
+    __mrChunks = [];
+  }
+  function __buildLastClipBlob() {
+    if (!__mrChunks.length) return null;
+    const cutoff = performance.now() - __CLIP_MS;
+    const parts = [];
+    for (let i = __mrChunks.length - 1; i >= 0; i--) {
+      if (__mrChunks[i].t >= cutoff) parts.unshift(__mrChunks[i].blob);
+      else break;
+    }
+    if (!parts.length) return null;
+    return new Blob(parts, { type: 'video/webm' });
+  }
+
+  const __replayOverlay = document.getElementById('replayOverlay');
+  const __replayVideo = document.getElementById('replayVideo');
+  let __replayURL = null;
+  function __hideReplay() {
+    if (__replayVideo) { __replayVideo.pause(); __replayVideo.removeAttribute('src'); __replayVideo.load(); }
+    if (__replayURL) { URL.revokeObjectURL(__replayURL); __replayURL = null; }
+    if (__replayOverlay) __replayOverlay.style.display = 'none';
+  }
+  function __replay15s() {
+    const blob = __buildLastClipBlob();
+    if (!blob) { try{ setStatus && setStatus('No clip yet'); }catch{} return; }
+    __hideReplay();
+    __replayURL = URL.createObjectURL(blob);
+    __replayVideo.src = __replayURL;
+    __replayOverlay.style.display = 'flex';
+    __replayVideo.currentTime = 0;
+    __replayVideo.play().catch(()=>{});
+  }
+  function __save15s() {
+    const blob = __buildLastClipBlob();
+    if (!blob) { try{ setStatus && setStatus('No clip to save'); }catch{} return; }
+    const a = document.createElement('a');
+    a.download = 'delay-clip-' + new Date().toISOString().replace(/[:.]/g,'-') + '.webm';
+    a.href = URL.createObjectURL(blob);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 0);
+  }
+  if (__replayOverlay) __replayOverlay.addEventListener('click', (e)=>{ if (e.target === __replayOverlay) __hideReplay(); });
+
+  // Wire buttons
+  const __btnReplay = document.getElementById('btnReplay');
+  const __btnSave = document.getElementById('btnSaveClip');
+  if (__btnReplay) __btnReplay.addEventListener('click', __replay15s);
+  if (__btnSave) __btnSave.addEventListener('click', __save15s);
+
   const btnStop = document.getElementById('btnStop');
   const btnPlayPause = document.getElementById('btnPlayPause');
 
