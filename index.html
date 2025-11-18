@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coach Replay</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="status">
+      <span id="modePill" class="pill live">LIVE</span>
+      <span class="sep">•</span>
+      <span id="bufferStatus">Buffering: <strong>On</strong></span>
+      <span class="sep">•</span>
+      <span id="wakeStatus">Keep Awake: <strong>Off</strong></span>
+      <span class="sep">•</span>
+      <span id="zoomStatus">Zoom: <strong>1.0×</strong></span>
+    </div>
+    <div class="presets">
+      <button class="chip" data-delay="10">10s</button>
+      <button class="chip active" data-delay="15">15s</button>
+      <button class="chip" data-delay="20">20s</button>
+      <button class="chip" data-delay="30">30s</button>
+      <label class="chip custom">
+        Custom
+        <input id="customDelay" type="number" min="3" max="120" value="15"/>s
+      </label>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="video-wrap">
+      <video id="liveVideo" playsinline autoplay muted></video>
+      <video id="replayVideo" playsinline controls hidden></video>
+    </div>
+  </main>
+
+  <footer class="controls">
+    <div class="row">
+      <button id="startBtn" class="primary">Start</button>
+      <button id="replayBtn" class="accent" disabled>Replay Last</button>
+      <button id="replayAgainBtn" disabled>Replay Again (15s)</button>
+      <button id="saveClipBtn" disabled>Save Last</button>
+    </div>
+    <div class="row">
+      <button id="slowMoBtn" disabled>Slow‑mo (0.5×)</button>
+      <button id="loopBtn" disabled>Loop Off</button>
+      <button id="zoomInBtn">Zoom +</button>
+      <button id="zoomOutBtn">Zoom −</button>
+      <button id="mirrorBtn">Mirror Off</button>
+      <button id="keepAwakeBtn">Keep Awake</button>
+      <button id="resetBtn" class="danger">Reset to Defaults</button>
+    </div>
+    <div class="row options">
+      <label class="toggle">
+        <input type="checkbox" id="pauseDuringReplay" />
+        <span>Pause buffer during replay</span>
+      </label>
+      <label class="toggle">
+        <input type="checkbox" id="defaultSlowMo" />
+        <span>Replay starts in Slow‑mo</span>
+      </label>
+    </div>
+  </footer>
+
+  <a id="downloadLink" style="display:none"></a>
+
+  <script src="script.js"></script>
+</body>
+</html>
