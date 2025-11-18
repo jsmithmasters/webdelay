@@ -1,61 +1,65 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Coach Replay — Delayed View</title>
-  <link rel="stylesheet" href="styles.css"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0f14"/>
+  <title>Video Delay</title>
+  <style>
+    html,body{height:100%;margin:0;background:#0b0f14;color:#e5e7eb;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    .app{display:flex;flex-direction:column;height:100%;gap:10px;padding:10px}
+    .stage{position:relative;flex:1;background:black;border-radius:12px;overflow:hidden;border:1px solid #1f2937}
+    canvas{display:block;width:100%;height:100%}
+    .controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+    button{padding:10px;border-radius:10px;border:none;font-weight:700;color:#fff;background:#2563eb}
+    button[disabled]{opacity:.5}
+    .bad{background:#dc2626}
+    .good{background:#16a34a}
+    .row{display:flex;gap:10px;align-items:center}
+    .stat{font-variant-numeric:tabular-nums}
+    input[type=range]{width:100%}
+    #status{position:absolute;left:10px;top:10px;padding:4px 8px;background:rgba(0,0,0,.6);border-radius:8px;font-size:12px}
+    .note{color:#9ca3af;font-size:12px;text-align:center}
+    .toggle{display:flex;align-items:center;gap:8px}
+  </style>
 </head>
 <body>
-<header class="topbar">
-  <div class="status">
-    <span id="modePill" class="pill live">LIVE</span>
-    <span class="sep">•</span><span id="bufferStatus">Buffer: <strong>Off</strong></span>
-    <span class="sep">•</span><span id="delayStatus">Delay: <strong>15s</strong></span>
-    <span class="sep">•</span><span id="zoomStatus">Zoom: <strong>1.0×</strong></span>
-  </div>
-  <div class="presets">
-    <button class="chip" data-delay="10">10s</button>
-    <button class="chip active" data-delay="15">15s</button>
-    <button class="chip" data-delay="20">20s</button>
-    <button class="chip" data-delay="30">30s</button>
-    <label class="chip custom">Custom<input id="customDelay" type="number" min="3" max="120" value="15"/>s</label>
-  </div>
-</header>
+  <div class="app">
+    <div class="stage">
+      <canvas id="screen"></canvas>
+      <video id="live" autoplay playsinline muted style="display:none"></video>
+      <div id="status">idle</div>
+    </div>
 
-<main class="main">
-  <div class="video-area">
-    <video id="liveVideo" playsinline autoplay muted hidden></video>
-    <video id="delayVideo" playsinline muted></video>
-    <video id="replayVideo" playsinline controls hidden></video>
-  </div>
-</main>
+    <div class="controls">
+      <button id="btnStart">Start</button>
+      <button id="btnStop" class="bad" disabled>Stop</button>
+      <button id="btnPlayPause" class="good" disabled>Pause</button>
+    </div>
 
-<footer class="controls">
-  <div class="row">
-    <button id="startBtn" class="primary">Start</button>
-    <button id="delayModeBtn" class="accent" disabled>Delay View: On</button>
-    <button id="replayBtn" disabled>Replay Last</button>
-    <button id="replayAgainBtn" disabled>Replay Again</button>
-    <button id="saveClipBtn" disabled>Save Last</button>
-  </div>
-  <div class="row">
-    <button id="slowMoBtn" disabled>Slow-mo (0.5×)</button>
-    <button id="loopBtn" disabled>Loop Off</button>
-    <button id="zoomInBtn">Zoom +</button>
-    <button id="zoomOutBtn">Zoom −</button>
-    <button id="mirrorBtn">Mirror Off</button>
-    <button id="keepAwakeBtn">Keep Awake</button>
-    <button id="resetBtn" class="danger">Reset</button>
-  </div>
-  <div class="row options">
-    <label class="toggle"><input type="checkbox" id="pauseDuringReplay"/> <span>Pause buffer during replay</span></label>
-    <label class="toggle"><input type="checkbox" id="defaultSlowMo"/> <span>Replay starts in Slow-mo</span></label>
-    <label class="toggle"><input type="checkbox" id="crossfadeDelay" checked/> <span>Smoothen delay view</span></label>
-  </div>
-</footer>
+    <div class="row">
+      <div>Delay: <span id="delayLabel" class="stat">12.0s</span></div>
+      <input id="delayRange" type="range" min="1" max="30" step="0.5" value="12"/>
+    </div>
 
-<a id="downloadLink" style="display:none"></a>
-<script src="script.js"></script>
+    <div class="row">
+      <div>Target FPS: <span id="fpsLabel" class="stat">20</span></div>
+      <input id="fpsRange" type="range" min="5" max="60" step="1" value="20"/>
+    </div>
+
+    <div class="row">
+      <label class="toggle"><input id="perfMode" type="checkbox" checked/> Performance mode (480p)</label>
+    </div>
+
+    <div class="row">
+      <div>Buffer: <span id="bufSec" class="stat">0.0</span>s</div>
+      <div>Lag: <span id="lagSec" class="stat">0.0</span>s</div>
+      <div>Draw FPS: <span id="drawFps" class="stat">0</span></div>
+    </div>
+
+    <div class="note">Must be opened over HTTPS (e.g., GitHub Pages) for camera to work on iOS.</div>
+  </div>
+
+  <script src="./script.js"></script>
 </body>
 </html>
