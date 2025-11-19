@@ -311,6 +311,8 @@
     }
 
     live.srcObject = stream;
+    try{ __startRecorder(stream); }catch(e){}
+    try{ if (!__mr && screen && screen.captureStream) { __startRecorder(screen.captureStream(targetFps||20)); } }catch(e){}
     live.setAttribute('playsinline','true');
     try { await live.play(); } catch {}
 
