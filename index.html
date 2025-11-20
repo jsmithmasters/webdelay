@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Delay Coach – iOS Clean Version</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>Delay Coach</h1>
+      <div id="platformNote" class="note hidden"></div>
+    </header>
+
+    <main id="stage">
+      <video id="player" playsinline muted></video>
+    </main>
+
+    <footer class="controls">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn">Stop</button>
+      <button id="replayBtn" disabled title="Replay disabled on iOS">Replay 15s</button>
+      <button id="saveBtn" disabled title="Save disabled on iOS">Save 15s</button>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
