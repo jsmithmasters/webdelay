@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Delay Coach — iOS Clean</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Delay Coach</div>
+    <div id="status" class="status">idle</div>
+  </header>
+
+  <main class="stage">
+    <canvas id="screen"></canvas>
+    <video id="live" playsinline muted></video>
+
+    <div id="replayOverlay" class="overlay hidden">
+      <video id="replayVideo" playsinline controls></video>
+    </div>
+  </main>
+
+  <footer class="controls">
+    <button id="btnStart">Start</button>
+    <button id="btnStop" disabled>Stop</button>
+    <button id="btnPlayPause" disabled>Pause</button>
+
+    <label class="slider">
+      <span id="delayLabel">Delay: 12s</span>
+      <input id="delayRange" type="range" min="2" max="20" step="1" value="12">
+    </label>
+
+    <label class="slider">
+      <span id="fpsLabel">FPS: 20</span>
+      <input id="fpsRange" type="range" min="10" max="30" step="1" value="20">
+    </label>
+
+    <label class="chk">
+      <input type="checkbox" id="perfMode">
+      <span>Perf</span>
+    </label>
+
+    <button id="btnReplay" disabled title="Disabled on iOS">Replay 15s</button>
+    <button id="btnSaveClip" disabled title="Disabled on iOS">Save 15s</button>
+
+    <div class="readouts">
+      <span>Buffer: <strong id="bufSec">0.0s</strong></span>
+      <span>Lag: <strong id="lagSec">0.0s</strong></span>
+      <span>Draw FPS: <strong id="drawFps">0</strong></span>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
