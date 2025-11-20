@@ -1,0 +1,46 @@
+/* iOS Clean — responsive: bottom controls in portrait, sidebar in landscape */
+:root { --vh: 1vh; --bg:#0b0b0c; --fg:#f5f5f7; --muted:#9aa0a6; --panel:rgba(15,16,18,.86); }
+
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; height:calc(var(--vh)*100); overflow:hidden; background:var(--bg); color:var(--fg); font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+
+.app { height:100%; display:flex; flex-direction:column; }
+
+.topbar { display:flex; align-items:center; justify-content:space-between; padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.08); }
+.brand { font-weight:700; letter-spacing:.3px; }
+.status { color:var(--muted); font-size:12px; }
+
+/* Layout container switches between column (portrait) and two-column (landscape) */
+.layout { position:relative; flex:1 1 auto; height:100%; display:flex; flex-direction:column; }
+
+.stage { position:relative; flex:1 1 auto; display:grid; place-items:center; padding:6px; }
+#screen { width:100%; height:100%; background:#000; border-radius:12px; box-shadow:0 4px 18px rgba(0,0,0,.35); }
+#live { display:none; }
+
+.controls { display:flex; gap:12px; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid rgba(255,255,255,.08); background:var(--panel); backdrop-filter: blur(8px); flex-wrap:wrap; }
+.control-group { display:flex; gap:8px; flex-wrap:wrap; }
+.btn { height:44px; border-radius:10px; border:1px solid rgba(255,255,255,.12); background:#1f2228; color:var(--fg); font-weight:600; padding:0 14px; }
+.btn.primary { border-color: rgba(79,70,229,.5); }
+.btn:disabled { opacity:.5; }
+.slider { display:flex; flex-direction:column; gap:2px; font-size:12px; }
+.slider input[type=range]{ width:160px; }
+.chk { display:flex; align-items:center; gap:8px; }
+
+.readouts { display:flex; gap:16px; font-size:12px; color:var(--muted); margin-left:auto; align-items:center; }
+
+.overlay { position:absolute; inset:0; background:rgba(0,0,0,.8); display:grid; place-items:center; }
+.hidden { display:none; }
+
+/* LANDSCAPE: two-column grid; sidebar on the right to maximize video area */
+@media (orientation:landscape){
+  .layout { display:grid; grid-template-columns: 1fr min(30vw, 320px); grid-template-rows: 1fr; height:100%; }
+  .stage { grid-column:1; grid-row:1; padding:8px 8px 8px 12px; }
+  .controls { grid-column:2; grid-row:1; border-top:none; border-left:1px solid rgba(255,255,255,.08); padding:12px; flex-direction:column; align-content:flex-start; justify-content:flex-start; height:100%; overflow:auto; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .readouts { margin-left:0; }
+}
+
+/* PORTRAIT: controls stay at bottom as a bar */
+@media (orientation:portrait){
+  .layout { flex-direction:column; }
+  .stage { height:calc(100% - 120px); }
+}
