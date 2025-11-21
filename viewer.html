@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Delay Coach — Viewer</title>
+  <style>
+    :root { --bg:#000; }
+    html,body { margin:0; height:100%; background:var(--bg); }
+    .wrap { width:100%; height:100%; display:grid; place-items:center; background:#000; }
+    img { width:100%; height:auto; max-height:100%; aspect-ratio:16/9; background:#000; }
+    .hint { position:fixed; top:8px; right:12px; color:#ccc; font:12px system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; opacity:.7; }
+    button { position:fixed; bottom:12px; right:12px; padding:10px 12px; font-weight:600; border-radius:10px; border:1px solid rgba(255,255,255,.2); background:#111; color:#eee; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <img id="frame" alt="Delayed Video" />
+    <div class="hint">Tip: Add to Home Screen for a minimal UI</div>
+    <button id="fs">Fullscreen</button>
+  </div>
+
+  <script>
+    const frame = document.getElementById('frame');
+    const fs = document.getElementById('fs');
+    function enterFullscreen(){
+      const el = document.documentElement;
+      if (el.requestFullscreen) return el.requestFullscreen();
+      if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+      return Promise.resolve();
+    }
+    fs.addEventListener('click', enterFullscreen);
+
+    window.addEventListener('message', (e)=>{
+      const d = e.data || {};
+      if (d.type === 'frame' && d.url){
+        frame.src = d.url;
+      }
+    });
+    // Signal ready to parent
+    try { window.opener && window.opener.postMessage({ type:'viewer-ready' }, '*'); } catch {}
+  </script>
+</body>
+</html>
