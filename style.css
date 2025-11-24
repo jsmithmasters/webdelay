@@ -1,0 +1,8 @@
+
+/* === Hide Controls Toggle (non-destructive) === */
+.app-shell.controls-hidden .controls { display: none !important; }
+.app-shell.controls-hidden .video-wrap { flex: 1 1 100% !important; width: 100% !important; }
+@media (orientation:landscape){
+  .app-shell.controls-hidden { gap: 0.5rem; }
+  .app-shell.controls-hidden .video-wrap { border-radius: 0; }
+}
