@@ -1,0 +1,71 @@
+/* Minimal, resilient styles focused on single-page video-first UX */
+:root {
+  --gap: 12px;
+  --pad: 12px;
+  --btn-bg: #111;
+  --btn-fg: #fff;
+  --btn-br: 10px;
+}
+* { box-sizing: border-box; }
+html, body, main.app {
+  margin: 0; padding: 0;
+  width: 100%; height: 100%;
+  background: #000;
+}
+main.app {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+video#delayedVideo {
+  width: 100vw;
+  height: 100vh;
+  object-fit: contain;
+  background: #000;
+}
+.controls {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  gap: var(--gap);
+  padding: var(--pad);
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.65) 35%, rgba(0,0,0,0.85) 100%);
+}
+button {
+  appearance: none;
+  font: 600 14px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  padding: 10px 14px;
+  color: var(--btn-fg);
+  background: var(--btn-bg);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: var(--btn-br);
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 80px;
+  transform: translateX(-50%);
+  color: #fff;
+  background: rgba(0,0,0,0.8);
+  padding: 8px 12px;
+  border-radius: 10px;
+  font: 600 13px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  opacity: 0;
+  transition: opacity .25s ease;
+  pointer-events: none;
+}
+
+/* Hide controls in landscape for a clean full-screen view */
+@media (orientation: landscape) {
+  .controls { display: none; }
+}
+
+/* Safe-area insets for iOS notch */
+@supports (padding: max(0px)) {
+  .controls { padding-bottom: max(var(--pad), env(safe-area-inset-bottom)); }
+}

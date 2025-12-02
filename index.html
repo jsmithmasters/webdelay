@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>Video Delay — Single Page</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <main class="app">
+    <video id="delayedVideo" autoplay playsinline muted></video>
+
+    <!-- Controls are visible in portrait; hidden automatically in landscape via CSS -->
+    <div class="controls" id="controls">
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="replayBtn" disabled>Replay 15s</button>
+      <button id="saveBtn" disabled>Save 15s</button>
+      <button id="fullscreenBtn">Fullscreen</button>
+    </div>
+
+    <!-- Brief overlay message area -->
+    <div id="toast" class="toast" aria-live="polite"></div>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
